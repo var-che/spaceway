@@ -132,40 +132,52 @@ pub enum OpType {
     #[n(1)]
     CreateChannel(#[n(0)] OpPayload),
 
-    /// Create a new thread
+    /// Update a channel
     #[n(2)]
+    UpdateChannel(#[n(0)] OpPayload),
+
+    /// Archive a channel
+    #[n(3)]
+    ArchiveChannel,
+
+    /// Create a new thread
+    #[n(4)]
     CreateThread(#[n(0)] OpPayload),
 
-    /// Create a new post
-    #[n(3)]
-    CreatePost(#[n(0)] OpPayload),
-
-    /// Edit an existing post
-    #[n(4)]
-    EditPost(#[n(0)] OpPayload),
-
-    /// Delete a post (tombstone)
+    /// Post a message
     #[n(5)]
-    DeletePost(#[n(0)] OpPayload),
+    PostMessage(#[n(0)] OpPayload),
+
+    /// Edit a message
+    #[n(6)]
+    EditMessage(#[n(0)] OpPayload),
+
+    /// Delete a message
+    #[n(7)]
+    DeleteMessage(#[n(0)] OpPayload),
+
+    /// Add a member to the space
+    #[n(8)]
+    AddMember(#[n(0)] OpPayload),
+
+    /// Remove a member from the space
+    #[n(9)]
+    RemoveMember(#[n(0)] OpPayload),
 
     /// Assign a role to a user
-    #[n(6)]
+    #[n(10)]
     AssignRole(#[n(0)] OpPayload),
 
     /// Remove a role from a user
-    #[n(7)]
+    #[n(11)]
     RemoveRole(#[n(0)] OpPayload),
 
-    /// Remove a member from the space (mirrors MLS commit)
-    #[n(8)]
-    RemoveMember(#[n(0)] OpPayload),
-
     /// Mute a user
-    #[n(9)]
+    #[n(12)]
     MuteUser(#[n(0)] OpPayload),
 
     /// Ban a user
-    #[n(10)]
+    #[n(13)]
     BanUser(#[n(0)] OpPayload),
 }
 
@@ -185,73 +197,63 @@ pub enum OpPayload {
     #[n(1)]
     CreateChannel {
         #[n(0)]
-        channel_id: ChannelId,
-        #[n(1)]
         name: String,
-        #[n(2)]
+        #[n(1)]
+        description: Option<String>,
+    },
+
+    /// Update channel payload
+    #[n(2)]
+    UpdateChannel {
+        #[n(0)]
+        name: Option<String>,
+        #[n(1)]
         description: Option<String>,
     },
 
     /// Create thread payload
-    #[n(2)]
+    #[n(3)]
     CreateThread {
         #[n(0)]
-        thread_id: ThreadId,
+        title: Option<String>,
         #[n(1)]
-        title: String,
+        first_message: String,
     },
 
-    /// Create post payload
-    #[n(3)]
-    CreatePost {
-        #[n(0)]
-        post_id: PostId,
-        #[n(1)]
-        content_hash: ContentHash,
-        #[cbor(n(2), with = "minicbor::bytes")]
-        content_meta: Vec<u8>,
-        #[n(3)]
-        parent: Option<PostId>,
-    },
-
-    /// Edit post payload
+    /// Post message payload
     #[n(4)]
-    EditPost {
+    PostMessage {
         #[n(0)]
-        post_id: PostId,
+        message_id: MessageId,
         #[n(1)]
-        new_content_hash: ContentHash,
+        content: String,
     },
 
-    /// Delete post payload
+    /// Edit message payload
     #[n(5)]
-    DeletePost {
+    EditMessage {
         #[n(0)]
-        post_id: PostId,
+        message_id: MessageId,
+        #[n(1)]
+        new_content: String,
+    },
+
+    /// Delete message payload
+    #[n(6)]
+    DeleteMessage {
+        #[n(0)]
+        message_id: MessageId,
         #[n(1)]
         reason: Option<String>,
     },
 
-    /// Assign role payload
-    #[n(6)]
-    AssignRole {
-        #[n(0)]
-        user_id: UserId,
-        #[n(1)]
-        role: Role,
-        #[n(2)]
-        channel_id: Option<ChannelId>,
-    },
-
-    /// Remove role payload
+    /// Add member payload
     #[n(7)]
-    RemoveRole {
+    AddMember {
         #[n(0)]
         user_id: UserId,
         #[n(1)]
         role: Role,
-        #[n(2)]
-        channel_id: Option<ChannelId>,
     },
 
     /// Remove member payload
@@ -263,8 +265,30 @@ pub enum OpPayload {
         reason: Option<String>,
     },
 
-    /// Mute user payload
+    /// Assign role payload
     #[n(9)]
+    AssignRole {
+        #[n(0)]
+        user_id: UserId,
+        #[n(1)]
+        role: Role,
+        #[n(2)]
+        channel_id: Option<ChannelId>,
+    },
+
+    /// Remove role payload
+    #[n(10)]
+    RemoveRole {
+        #[n(0)]
+        user_id: UserId,
+        #[n(1)]
+        role: Role,
+        #[n(2)]
+        channel_id: Option<ChannelId>,
+    },
+
+    /// Mute user payload
+    #[n(11)]
     MuteUser {
         #[n(0)]
         user_id: UserId,
@@ -273,7 +297,7 @@ pub enum OpPayload {
     },
 
     /// Ban user payload
-    #[n(10)]
+    #[n(12)]
     BanUser {
         #[n(0)]
         user_id: UserId,
@@ -317,11 +341,9 @@ mod tests {
             space_id: SpaceId(Uuid::new_v4()),
             channel_id: None,
             thread_id: None,
-            op_type: OpType::CreatePost(OpPayload::CreatePost {
-                post_id: PostId(Uuid::new_v4()),
-                content_hash: ContentHash([0u8; 32]),
-                content_meta: vec![],
-                parent: None,
+            op_type: OpType::PostMessage(OpPayload::PostMessage {
+                message_id: MessageId(Uuid::new_v4()),
+                content: "Hello world".to_string(),
             }),
             prev_ops: vec![],
             author: UserId([1u8; 32]),

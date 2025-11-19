@@ -7,6 +7,7 @@
 
 pub mod crdt;
 pub mod crypto;
+pub mod forum;
 pub mod mls;
 pub mod network;
 pub mod storage;
@@ -49,6 +50,18 @@ pub enum Error {
 
     #[error("Serialization failed: {0}")]
     Serialization(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
+
+    #[error("Permission denied: {0}")]
+    Permission(String),
+
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

@@ -287,11 +287,9 @@ mod tests {
             space_id,
             channel_id: None,
             thread_id: None,
-            op_type: OpType::CreatePost(OpPayload::CreatePost {
-                post_id: PostId(Uuid::new_v4()),
-                content_hash: ContentHash([0u8; 32]),
-                content_meta: vec![],
-                parent: None,
+            op_type: OpType::PostMessage(OpPayload::PostMessage {
+                message_id: MessageId(Uuid::new_v4()),
+                content: "Test message".to_string(),
             }),
             prev_ops,
             author: UserId([1u8; 32]),

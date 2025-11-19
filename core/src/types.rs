@@ -48,6 +48,10 @@ pub struct ThreadId(pub Uuid);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct PostId(pub Uuid);
 
+/// Message identifier
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct MessageId(pub Uuid);
+
 /// Operation identifier
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct OpId(pub Uuid);
@@ -236,6 +240,21 @@ impl<'b, C> Decode<'b, C> for PostId {
         let bytes = d.bytes()?;
         let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
         Ok(PostId(uuid))
+    }
+}
+
+impl<C> Encode<C> for MessageId {
+    fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
+        e.bytes(self.0.as_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'b, C> Decode<'b, C> for MessageId {
+    fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        let bytes = d.bytes()?;
+        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
+        Ok(MessageId(uuid))
     }
 }
 

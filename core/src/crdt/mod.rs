@@ -10,7 +10,9 @@
 pub mod hlc;
 pub mod ops;
 pub mod validator;
+pub mod holdback;
 
 pub use hlc::Hlc;
 pub use ops::{CrdtOp, OpPayload, OpType};
 pub use validator::{OpValidator, ValidationResult, RejectionReason};
+pub use holdback::HoldbackQueue;

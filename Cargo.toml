@@ -1,0 +1,56 @@
+[workspace]
+members = [
+    "core",
+    "relay",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Descord Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-test = "0.4"
+
+# Serialization
+minicbor = { version = "0.20", features = ["derive", "alloc", "std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
+
+# Crypto
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+blake3 = "1.5"
+rand = "0.8"
+
+# MLS
+openmls = "0.6"
+openmls_traits = "0.2"
+openmls_rust_crypto = "0.2"
+openmls_basic_credential = "0.2"
+
+# CRDT
+crdts = "7.3"
+
+# Networking
+libp2p = { version = "0.56", features = ["kad", "gossipsub", "relay", "noise", "tcp", "quic", "macros", "identify", "request-response"] }
+quinn = "0.11"
+
+# Storage
+rocksdb = "0.21"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1.5"
+
+# Testing
+proptest = "1.4"

@@ -1,0 +1,54 @@
+[package]
+name = "descord-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+
+# Serialization
+minicbor = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+
+# MLS
+openmls = { workspace = true }
+openmls_traits = { workspace = true }
+openmls_rust_crypto = { workspace = true }
+openmls_basic_credential = { workspace = true }
+
+# CRDT
+crdts = { workspace = true }
+
+# Networking
+libp2p = { workspace = true }
+quinn = { workspace = true }
+
+# Storage
+rocksdb = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+proptest = { workspace = true }
+tempfile = "3.8"
+
+[lib]
+name = "descord_core"
+path = "src/lib.rs"

@@ -2410,16 +2410,18 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openmls"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f1295188c6665fb9e96466180ac0a919ef52b5861cf7e86523823661348a597"
+checksum = "7af47d535cef7b75806a2b5fcf81ba8e68179f5923aca9bc6a4d8d563e4f8757"
 dependencies = [
  "log",
- "openmls_traits 0.3.0",
+ "openmls_traits 0.4.1",
  "rayon",
  "serde",
- "thiserror 1.0.69",
+ "serde_bytes",
+ "thiserror 2.0.17",
  "tls_codec 0.4.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -2485,9 +2487,9 @@ dependencies = [
 
 [[package]]
 name = "openmls_traits"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "443afa05406adc75fbfa0c3e04db93c5647b763861a474ae1aa8a99c362b80f8"
+checksum = "e21d8877bacdbc407060df29bf59b145bb886a8fa0099b87ae8067a34b902a13"
 dependencies = [
  "serde",
  "tls_codec 0.4.2",

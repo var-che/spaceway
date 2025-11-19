@@ -138,6 +138,10 @@ impl Client {
                                         let mut manager = space_manager.write().await;
                                         let _ = manager.process_create_space(&op);
                                     }
+                                    crate::crdt::OpType::UpdateSpaceVisibility(_) => {
+                                        let mut manager = space_manager.write().await;
+                                        let _ = manager.process_update_space_visibility(&op);
+                                    }
                                     crate::crdt::OpType::CreateChannel(_) => {
                                         let mut manager = channel_manager.write().await;
                                         let _ = manager.process_create_channel(&op);
@@ -190,13 +194,24 @@ impl Client {
         name: String,
         description: Option<String>,
     ) -> Result<(Space, CrdtOp)> {
+        self.create_space_with_visibility(name, description, SpaceVisibility::default()).await
+    }
+
+    /// Create a new Space with specific visibility
+    pub async fn create_space_with_visibility(
+        &self,
+        name: String,
+        description: Option<String>,
+        visibility: SpaceVisibility,
+    ) -> Result<(Space, CrdtOp)> {
         let space_id = SpaceId(uuid::Uuid::new_v4());
         
         let mut manager = self.space_manager.write().await;
-        let op = manager.create_space(
+        let op = manager.create_space_with_visibility(
             space_id,
             name,
             description,
+            visibility,
             self.user_id,
             &self.keypair,
             &self.mls_provider,
@@ -213,6 +228,29 @@ impl Client {
             .clone();
         
         Ok((space, op))
+    }
+
+    /// Update a Space's visibility (admins only)
+    pub async fn update_space_visibility(
+        &self,
+        space_id: SpaceId,
+        visibility: SpaceVisibility,
+    ) -> Result<CrdtOp> {
+        let mut manager = self.space_manager.write().await;
+        let op = manager.update_space_visibility(
+            space_id,
+            visibility,
+            self.user_id,
+            &self.keypair,
+        )?;
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        Ok(op)
     }
     
     /// Get a Space by ID
@@ -533,6 +571,10 @@ impl Client {
             crate::crdt::OpType::CreateSpace(_) => {
                 let mut manager = self.space_manager.write().await;
                 manager.process_create_space(&op)?;
+            }
+            crate::crdt::OpType::UpdateSpaceVisibility(_) => {
+                let mut manager = self.space_manager.write().await;
+                manager.process_update_space_visibility(&op)?;
             }
             crate::crdt::OpType::CreateChannel(_) => {
                 let mut manager = self.channel_manager.write().await;

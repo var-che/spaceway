@@ -100,6 +100,44 @@ impl fmt::Display for ContentHash {
     }
 }
 
+/// Space visibility and discoverability
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
+#[cbor(index_only)]
+pub enum SpaceVisibility {
+    /// Public: Listed in public directory, anyone can join
+    #[n(0)]
+    Public,
+    /// Private: Invite-only, not publicly listed
+    #[n(1)]
+    Private,
+    /// Hidden: Maximum privacy, requires cryptographic invitation
+    #[n(2)]
+    Hidden,
+}
+
+impl Default for SpaceVisibility {
+    fn default() -> Self {
+        SpaceVisibility::Private
+    }
+}
+
+impl SpaceVisibility {
+    /// Whether this space is discoverable via public directory
+    pub fn is_discoverable(&self) -> bool {
+        matches!(self, SpaceVisibility::Public)
+    }
+
+    /// Whether this space requires invitation to join
+    pub fn requires_invite(&self) -> bool {
+        !matches!(self, SpaceVisibility::Public)
+    }
+
+    /// Whether this space is hidden (maximum privacy)
+    pub fn is_hidden(&self) -> bool {
+        matches!(self, SpaceVisibility::Hidden)
+    }
+}
+
 /// User role within a space or channel
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
 #[cbor(index_only)]

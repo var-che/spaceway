@@ -28,6 +28,9 @@ pub struct Space {
     /// Current members (user_id -> role)
     pub members: HashMap<UserId, Role>,
     
+    /// Visibility and discoverability settings
+    pub visibility: SpaceVisibility,
+    
     /// Current MLS epoch
     pub epoch: EpochId,
     
@@ -53,9 +56,39 @@ impl Space {
             description,
             owner,
             members,
+            visibility: SpaceVisibility::default(),
             epoch: EpochId(0),
             created_at,
         }
+    }
+    
+    /// Create a new Space with specific visibility
+    pub fn new_with_visibility(
+        id: SpaceId,
+        name: String,
+        description: Option<String>,
+        owner: UserId,
+        visibility: SpaceVisibility,
+        created_at: u64,
+    ) -> Self {
+        let mut members = HashMap::new();
+        members.insert(owner, Role::Admin);
+        
+        Self {
+            id,
+            name,
+            description,
+            owner,
+            members,
+            visibility,
+            epoch: EpochId(0),
+            created_at,
+        }
+    }
+    
+    /// Update space visibility
+    pub fn set_visibility(&mut self, visibility: SpaceVisibility) {
+        self.visibility = visibility;
     }
     
     /// Add a member to the Space
@@ -198,6 +231,170 @@ impl SpaceManager {
         self.validator.apply_op(&op);
         
         Ok(op)
+    }
+
+    /// Create a new Space with specific visibility
+    pub fn create_space_with_visibility(
+        &mut self,
+        space_id: SpaceId,
+        name: String,
+        description: Option<String>,
+        visibility: SpaceVisibility,
+        creator: UserId,
+        creator_keypair: &crate::crypto::signing::Keypair,
+        provider: &DescordProvider,
+    ) -> Result<CrdtOp> {
+        // Check if space already exists
+        if self.spaces.contains_key(&space_id) {
+            return Err(Error::AlreadyExists(format!("Space {:?} already exists", space_id)));
+        }
+        
+        // Create MLS group for this space
+        let mls_config = MlsGroupConfig::default();
+        let signer = openmls_basic_credential::SignatureKeyPair::new(
+            mls_config.ciphersuite.signature_algorithm()
+        ).map_err(|e| Error::Crypto(format!("Failed to create signer: {:?}", e)))?;
+        
+        let mls_group = MlsGroup::create(
+            space_id,
+            signer,
+            mls_config,
+            provider,
+        )?;
+        
+        // Create Space
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let space = Space::new_with_visibility(
+            space_id,
+            name.clone(),
+            description.clone(),
+            creator,
+            visibility,
+            current_time,
+        );
+        
+        // Create CRDT operation
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::CreateSpace(OpPayload::CreateSpace {
+                name,
+                description,
+            }),
+            prev_ops: vec![],
+            author: creator,
+            epoch: EpochId(0),
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(creator_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally
+        self.spaces.insert(space_id, space);
+        self.mls_groups.insert(space_id, mls_group);
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+
+    /// Update a Space's visibility (admins only)
+    pub fn update_space_visibility(
+        &mut self,
+        space_id: SpaceId,
+        visibility: SpaceVisibility,
+        author: UserId,
+        author_keypair: &crate::crypto::signing::Keypair,
+    ) -> Result<CrdtOp> {
+        // Check space exists
+        let space = self.spaces.get_mut(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Check author has permission (Admin only)
+        let author_role = space.get_role(&author)
+            .ok_or_else(|| Error::Permission("Author not in Space".to_string()))?;
+        
+        if !author_role.is_admin() {
+            return Err(Error::Permission("Only admins can change space visibility".to_string()));
+        }
+        
+        // Create operation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::UpdateSpaceVisibility(OpPayload::UpdateSpaceVisibility {
+                visibility,
+            }),
+            prev_ops: vec![],
+            author,
+            epoch: space.epoch,
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(author_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally
+        space.set_visibility(visibility);
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+
+    /// Process an incoming UpdateSpaceVisibility operation
+    pub fn process_update_space_visibility(&mut self, op: &CrdtOp) -> Result<()> {
+        // Validate the operation
+        match self.validator.validate(op, &self.operations) {
+            ValidationResult::Accept => {
+                if let OpType::UpdateSpaceVisibility(OpPayload::UpdateSpaceVisibility { visibility }) = &op.op_type {
+                    if let Some(space) = self.spaces.get_mut(&op.space_id) {
+                        // Verify author is admin
+                        if let Some(role) = space.get_role(&op.author) {
+                            if role.is_admin() {
+                                space.set_visibility(*visibility);
+                                self.operations.insert(op.op_id, op.clone());
+                                self.validator.apply_op(op);
+                                self.hlc.update(op.hlc);
+                                return Ok(());
+                            }
+                        }
+                        return Err(Error::Permission("Only admins can change space visibility".to_string()));
+                    }
+                    return Err(Error::NotFound(format!("Space {:?} not found", op.space_id)));
+                } else {
+                    return Err(Error::InvalidOperation("Expected UpdateSpaceVisibility operation".to_string()));
+                }
+            }
+            ValidationResult::Buffered(deps) => {
+                self.holdback.buffer(op.clone(), deps, op.timestamp)
+                    .map_err(|e| Error::Storage(e))?;
+                Ok(())
+            }
+            ValidationResult::Reject(reason) => {
+                Err(Error::InvalidOperation(format!("Operation rejected: {:?}", reason)))
+            }
+        }
     }
     
     /// Process an incoming CreateSpace operation

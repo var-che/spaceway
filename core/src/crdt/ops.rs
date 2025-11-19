@@ -128,56 +128,60 @@ pub enum OpType {
     #[n(0)]
     CreateSpace(#[n(0)] OpPayload),
 
-    /// Create a new channel
+    /// Update space visibility
     #[n(1)]
+    UpdateSpaceVisibility(#[n(0)] OpPayload),
+
+    /// Create a new channel
+    #[n(2)]
     CreateChannel(#[n(0)] OpPayload),
 
     /// Update a channel
-    #[n(2)]
+    #[n(3)]
     UpdateChannel(#[n(0)] OpPayload),
 
     /// Archive a channel
-    #[n(3)]
+    #[n(4)]
     ArchiveChannel,
 
     /// Create a new thread
-    #[n(4)]
+    #[n(5)]
     CreateThread(#[n(0)] OpPayload),
 
     /// Post a message
-    #[n(5)]
+    #[n(6)]
     PostMessage(#[n(0)] OpPayload),
 
     /// Edit a message
-    #[n(6)]
+    #[n(7)]
     EditMessage(#[n(0)] OpPayload),
 
     /// Delete a message
-    #[n(7)]
+    #[n(8)]
     DeleteMessage(#[n(0)] OpPayload),
 
     /// Add a member to the space
-    #[n(8)]
+    #[n(9)]
     AddMember(#[n(0)] OpPayload),
 
     /// Remove a member from the space
-    #[n(9)]
+    #[n(10)]
     RemoveMember(#[n(0)] OpPayload),
 
     /// Assign a role to a user
-    #[n(10)]
+    #[n(11)]
     AssignRole(#[n(0)] OpPayload),
 
     /// Remove a role from a user
-    #[n(11)]
+    #[n(12)]
     RemoveRole(#[n(0)] OpPayload),
 
     /// Mute a user
-    #[n(12)]
+    #[n(13)]
     MuteUser(#[n(0)] OpPayload),
 
     /// Ban a user
-    #[n(13)]
+    #[n(14)]
     BanUser(#[n(0)] OpPayload),
 }
 
@@ -193,8 +197,15 @@ pub enum OpPayload {
         description: Option<String>,
     },
 
-    /// Create channel payload
+    /// Update space visibility payload
     #[n(1)]
+    UpdateSpaceVisibility {
+        #[n(0)]
+        visibility: SpaceVisibility,
+    },
+
+    /// Create channel payload
+    #[n(2)]
     CreateChannel {
         #[n(0)]
         name: String,
@@ -203,7 +214,7 @@ pub enum OpPayload {
     },
 
     /// Update channel payload
-    #[n(2)]
+    #[n(3)]
     UpdateChannel {
         #[n(0)]
         name: Option<String>,
@@ -212,7 +223,7 @@ pub enum OpPayload {
     },
 
     /// Create thread payload
-    #[n(3)]
+    #[n(4)]
     CreateThread {
         #[n(0)]
         title: Option<String>,
@@ -223,7 +234,7 @@ pub enum OpPayload {
     },
 
     /// Post message payload
-    #[n(4)]
+    #[n(5)]
     PostMessage {
         #[n(0)]
         message_id: MessageId,
@@ -232,7 +243,7 @@ pub enum OpPayload {
     },
 
     /// Edit message payload
-    #[n(5)]
+    #[n(6)]
     EditMessage {
         #[n(0)]
         message_id: MessageId,
@@ -241,7 +252,7 @@ pub enum OpPayload {
     },
 
     /// Delete message payload
-    #[n(6)]
+    #[n(7)]
     DeleteMessage {
         #[n(0)]
         message_id: MessageId,
@@ -250,7 +261,7 @@ pub enum OpPayload {
     },
 
     /// Add member payload
-    #[n(7)]
+    #[n(8)]
     AddMember {
         #[n(0)]
         user_id: UserId,
@@ -259,7 +270,7 @@ pub enum OpPayload {
     },
 
     /// Remove member payload
-    #[n(8)]
+    #[n(9)]
     RemoveMember {
         #[n(0)]
         user_id: UserId,
@@ -268,7 +279,7 @@ pub enum OpPayload {
     },
 
     /// Assign role payload
-    #[n(9)]
+    #[n(10)]
     AssignRole {
         #[n(0)]
         user_id: UserId,
@@ -279,7 +290,7 @@ pub enum OpPayload {
     },
 
     /// Remove role payload
-    #[n(10)]
+    #[n(11)]
     RemoveRole {
         #[n(0)]
         user_id: UserId,
@@ -290,7 +301,7 @@ pub enum OpPayload {
     },
 
     /// Mute user payload
-    #[n(11)]
+    #[n(12)]
     MuteUser {
         #[n(0)]
         user_id: UserId,
@@ -299,7 +310,7 @@ pub enum OpPayload {
     },
 
     /// Ban user payload
-    #[n(12)]
+    #[n(13)]
     BanUser {
         #[n(0)]
         user_id: UserId,

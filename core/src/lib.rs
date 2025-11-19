@@ -7,6 +7,7 @@
 
 pub mod crdt;
 pub mod crypto;
+pub mod mls;
 pub mod network;
 pub mod storage;
 pub mod types;

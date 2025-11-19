@@ -218,6 +218,8 @@ pub enum OpPayload {
         title: Option<String>,
         #[n(1)]
         first_message: String,
+        #[n(2)]
+        first_message_id: MessageId,
     },
 
     /// Post message payload

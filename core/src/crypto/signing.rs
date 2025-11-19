@@ -6,6 +6,7 @@ use ed25519_dalek::{Signer, Verifier};
 use rand::rngs::OsRng;
 
 /// Ed25519 keypair
+#[derive(Clone)]
 pub struct Keypair {
     inner: ed25519_dalek::SigningKey,
 }

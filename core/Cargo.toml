@@ -48,7 +48,14 @@ bytes = { workspace = true }
 tokio-test = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3.8"
+hex = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = { workspace = true }
 
 [lib]
 name = "descord_core"
 path = "src/lib.rs"
+
+[[example]]
+name = "test_three_person"
+path = "examples/test_three_person.rs"

@@ -41,6 +41,7 @@ pub enum RejectionReason {
 /// CRDT operation validator
 ///
 /// Implements the `accept_op` algorithm from the specification
+#[derive(Clone)]
 pub struct OpValidator {
     /// Current MLS epoch for each space
     space_epochs: HashMap<SpaceId, EpochId>,

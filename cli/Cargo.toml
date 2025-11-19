@@ -1,0 +1,37 @@
+[package]
+name = "descord-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "descord"
+path = "src/main.rs"
+
+[dependencies]
+descord-core = { path = "../core" }
+
+# Async
+tokio.workspace = true
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+rustyline = "14.0"
+colored = "2.1"
+
+# Serialization
+serde_json = "1.0"
+serde.workspace = true
+serde_bytes.workspace = true
+
+# Crypto
+ed25519-dalek.workspace = true
+rand.workspace = true
+
+# Utilities
+anyhow.workspace = true
+hex.workspace = true
+chrono.workspace = true
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -2,6 +2,7 @@
 members = [
     "core",
     "relay",
+    "cli",
 ]
 resolver = "2"
 
@@ -38,7 +39,7 @@ openmls_basic_credential = "0.4"
 crdts = "7.3"
 
 # Networking
-libp2p = { version = "0.56", features = ["kad", "gossipsub", "relay", "noise", "tcp", "quic", "macros", "identify", "request-response"] }
+libp2p = { version = "0.56", features = ["kad", "gossipsub", "relay", "noise", "tcp", "quic", "macros", "identify", "request-response", "tokio", "yamux"] }
 quinn = "0.11"
 
 # Storage
@@ -48,6 +49,8 @@ rocksdb = "0.21"
 uuid = { version = "1.6", features = ["v4", "serde"] }
 thiserror = "1.0"
 anyhow = "1.0"
+hex = "0.4"
+chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1.5"

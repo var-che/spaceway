@@ -12,6 +12,9 @@ pub mod ops;
 pub mod validator;
 pub mod holdback;
 
+#[cfg(test)]
+mod convergence_tests;
+
 pub use hlc::Hlc;
 pub use ops::{CrdtOp, OpPayload, OpType};
 pub use validator::{OpValidator, ValidationResult, RejectionReason};

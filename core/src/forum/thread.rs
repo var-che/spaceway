@@ -235,7 +235,8 @@ impl ThreadManager {
             thread_id: Some(thread_id),
             op_type: OpType::CreateThread(OpPayload::CreateThread {
                 title,
-                first_message: first_message_content,
+                first_message: first_message_content.clone(),
+                first_message_id,
             }),
             prev_ops: vec![],
             author: creator,
@@ -272,13 +273,13 @@ impl ThreadManager {
     pub fn process_create_thread(&mut self, op: &CrdtOp) -> Result<()> {
         match self.validator.validate(op, &self.operations) {
             ValidationResult::Accept => {
-                if let OpType::CreateThread(OpPayload::CreateThread { title, first_message }) = &op.op_type {
+                if let OpType::CreateThread(OpPayload::CreateThread { title, first_message, first_message_id }) = &op.op_type {
                     let thread_id = op.thread_id
                         .ok_or_else(|| Error::InvalidOperation("Missing thread_id".to_string()))?;
                     let channel_id = op.channel_id
                         .ok_or_else(|| Error::InvalidOperation("Missing channel_id".to_string()))?;
                     
-                    let first_message_id = MessageId(uuid::Uuid::new_v4());
+                    let first_message_id = *first_message_id;
                     
                     let thread = Thread::new(
                         thread_id,
@@ -317,6 +318,87 @@ impl ThreadManager {
                     Ok(())
                 } else {
                     Err(Error::InvalidOperation("Expected CreateThread operation".to_string()))
+                }
+            }
+            ValidationResult::Buffered(deps) => {
+                self.holdback.buffer(op.clone(), deps, op.timestamp)
+                    .map_err(|e| Error::Storage(e))?;
+                Ok(())
+            }
+            ValidationResult::Reject(reason) => {
+                Err(Error::InvalidOperation(format!("Operation rejected: {:?}", reason)))
+            }
+        }
+    }
+    
+    /// Process an incoming PostMessage operation
+    pub fn process_post_message(&mut self, op: &CrdtOp) -> Result<()> {
+        match self.validator.validate(op, &self.operations) {
+            ValidationResult::Accept => {
+                if let OpType::PostMessage(OpPayload::PostMessage { message_id, content }) = &op.op_type {
+                    let thread_id = op.thread_id
+                        .ok_or_else(|| Error::InvalidOperation("Missing thread_id".to_string()))?;
+                    
+                    let message = Message::new(
+                        *message_id,
+                        thread_id,
+                        content.clone(),
+                        op.author,
+                        op.timestamp,
+                    );
+                    
+                    self.messages.insert(*message_id, message);
+                    self.thread_messages
+                        .entry(thread_id)
+                        .or_insert_with(Vec::new)
+                        .push(*message_id);
+                    
+                    if let Some(thread) = self.threads.get_mut(&thread_id) {
+                        thread.add_message();
+                    }
+                    
+                    self.operations.insert(op.op_id, op.clone());
+                    self.validator.apply_op(op);
+                    self.hlc.update(op.hlc);
+                    
+                    Ok(())
+                } else {
+                    Err(Error::InvalidOperation("Expected PostMessage operation".to_string()))
+                }
+            }
+            ValidationResult::Buffered(deps) => {
+                self.holdback.buffer(op.clone(), deps, op.timestamp)
+                    .map_err(|e| Error::Storage(e))?;
+                Ok(())
+            }
+            ValidationResult::Reject(reason) => {
+                Err(Error::InvalidOperation(format!("Operation rejected: {:?}", reason)))
+            }
+        }
+    }
+    
+    /// Process an incoming EditMessage operation
+    pub fn process_edit_message(&mut self, op: &CrdtOp) -> Result<()> {
+        match self.validator.validate(op, &self.operations) {
+            ValidationResult::Accept => {
+                if let OpType::EditMessage(OpPayload::EditMessage { message_id, new_content }) = &op.op_type {
+                    if let Some(message) = self.messages.get_mut(message_id) {
+                        // Only author can edit
+                        if message.author == op.author {
+                            message.content = new_content.clone();
+                            message.edited_at = Some(op.timestamp);
+                        } else {
+                            return Err(Error::Permission("Only author can edit message".to_string()));
+                        }
+                    }
+                    
+                    self.operations.insert(op.op_id, op.clone());
+                    self.validator.apply_op(op);
+                    self.hlc.update(op.hlc);
+                    
+                    Ok(())
+                } else {
+                    Err(Error::InvalidOperation("Expected EditMessage operation".to_string()))
                 }
             }
             ValidationResult::Buffered(deps) => {

@@ -5,6 +5,7 @@
 //! Discord-like applications with E2E encryption, CRDT-based conflict resolution,
 //! and MLS group key management.
 
+pub mod client;
 pub mod crdt;
 pub mod crypto;
 pub mod forum;
@@ -13,6 +14,7 @@ pub mod network;
 pub mod storage;
 pub mod types;
 
+pub use client::{Client, ClientConfig};
 pub use types::*;
 
 /// Result type used throughout the library

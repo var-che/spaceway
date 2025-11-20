@@ -13,6 +13,8 @@ tokio = { workspace = true, features = ["full"] }
 
 # Serialization
 minicbor = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
 
 # Networking
 libp2p = { workspace = true, features = ["tcp", "noise", "yamux", "gossipsub", "kad", "relay", "macros"] }
@@ -23,6 +25,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
+
+# Monitoring
+hyper = { version = "1.1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
 
 [[bin]]
 name = "descord-relay"

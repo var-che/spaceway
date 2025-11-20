@@ -19,14 +19,61 @@ A dedicated Circuit Relay v2 server for IP privacy and NAT traversal in the Desc
 cargo build --package descord-relay --release
 ```
 
-### Run
+### Run with Defaults
 
 ```bash
-# Run on default port (9000)
+# Default: port 9000, standard limits
 ./target/release/descord-relay
 
 # Or via cargo
 cargo run --package descord-relay --release
+```
+
+### Run with Custom Configuration
+
+```bash
+# Custom port
+./target/release/descord-relay --port 8080
+
+# High-capacity relay
+./target/release/descord-relay \
+  --max-circuits 1000 \
+  --max-circuits-per-peer 10 \
+  --circuit-bandwidth-mb 500
+
+# Debug logging with faster stats
+./target/release/descord-relay \
+  --log-level debug \
+  --stats-interval-secs 10
+
+# Production VPS config
+./target/release/descord-relay \
+  --interface 0.0.0.0 \
+  --port 9000 \
+  --max-reservations 2048 \
+  --max-circuits 1024 \
+  --circuit-bandwidth-mb 200 \
+  --log-level info
+```
+
+### CLI Options
+
+```
+Usage: descord-relay [OPTIONS]
+
+Options:
+  -p, --port <PORT>                                  Port to listen on [default: 9000]
+  -i, --interface <INTERFACE>                        Interface to bind [default: 0.0.0.0]
+      --max-reservations <MAX_RESERVATIONS>          Maximum total reservations [default: 1024]
+      --max-reservations-per-peer <PER_PEER>         Maximum reservations per peer [default: 3]
+      --max-circuits <MAX_CIRCUITS>                  Maximum total circuits [default: 512]
+      --max-circuits-per-peer <PER_PEER>             Maximum circuits per peer [default: 5]
+      --circuit-duration-secs <DURATION_SECS>        Circuit duration limit [default: 3600]
+      --circuit-bandwidth-mb <BANDWIDTH_MB>          Circuit bandwidth limit [default: 100]
+      --stats-interval-secs <INTERVAL_SECS>          Statistics interval [default: 60]
+      --log-level <LOG_LEVEL>                        Log level [default: info]
+  -h, --help                                         Print help
+  -V, --version                                      Print version
 ```
 
 ## Configuration

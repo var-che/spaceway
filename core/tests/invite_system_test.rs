@@ -1,10 +1,9 @@
 use descord_core::{Client, ClientConfig, crypto::Keypair};
 use descord_core::types::{SpaceVisibility, InviteCreatorRole, InvitePermissions};
 use anyhow::Result;
-use std::path::PathBuf;
 
 /// Helper to create a test client
-fn create_test_client(name: &str) -> Result<Client> {
+fn create_test_client(_name: &str) -> Result<Client> {
     let keypair = Keypair::generate();
     let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
@@ -262,7 +261,11 @@ async fn test_invite_validation() -> Result<()> {
     // Valid invite
     let invite = Invite {
         id: descord_core::types::InviteId(Uuid::new_v4()),
-        space_id: descord_core::types::SpaceId(Uuid::new_v4()),
+        space_id: {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 1; // Make it non-zero
+            descord_core::types::SpaceId(bytes)
+        },
         creator: descord_core::types::UserId([0u8; 32]),
         code: "TEST1234".to_string(),
         max_uses: Some(5),

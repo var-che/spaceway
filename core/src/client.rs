@@ -208,7 +208,11 @@ impl Client {
         description: Option<String>,
         visibility: SpaceVisibility,
     ) -> Result<(Space, CrdtOp, PrivacyInfo)> {
-        let space_id = SpaceId(uuid::Uuid::new_v4());
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let space_id = SpaceId::from_content(&self.user_id, &name, timestamp);
         
         // Generate privacy information for user consent
         let privacy_info = PrivacyInfo::from_visibility(visibility);
@@ -392,7 +396,7 @@ impl Client {
         name: String,
         description: Option<String>,
     ) -> Result<(Channel, CrdtOp)> {
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
+        let channel_id = ChannelId::from_content(&space_id, &name, &self.user_id);
         
         // Get current epoch from Space
         let epoch = {
@@ -446,7 +450,23 @@ impl Client {
         title: Option<String>,
         first_message: String,
     ) -> Result<(Thread, CrdtOp)> {
-        let thread_id = ThreadId(uuid::Uuid::new_v4());
+        // Hash the first message content
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(first_message.as_bytes());
+        let content_hash_array: [u8; 32] = hasher.finalize().into();
+        
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let thread_id = ThreadId::from_content(
+            &channel_id,
+            &self.user_id,
+            &content_hash_array,
+            timestamp,
+        );
         
         // Get current epoch from Space
         let epoch = {
@@ -500,7 +520,24 @@ impl Client {
         thread_id: ThreadId,
         content: String,
     ) -> Result<(Message, CrdtOp)> {
-        let message_id = MessageId(uuid::Uuid::new_v4());
+        // Hash the message content
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        let content_hash_array: [u8; 32] = hasher.finalize().into();
+        
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let message_id = MessageId::from_content(
+            &self.user_id,
+            &thread_id,
+            &content_hash_array,
+            timestamp,
+            None, // No parent ID for top-level message
+        );
         
         // Get current epoch from Space
         let epoch = {
@@ -597,7 +634,7 @@ impl Client {
     
     /// Broadcast a CRDT operation to the network
     async fn broadcast_op(&self, op: &CrdtOp) -> Result<()> {
-        let topic = format!("space/{}", op.space_id.0);
+        let topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
         let data = minicbor::to_vec(op)
             .map_err(|e| Error::Serialization(format!("Failed to encode operation: {}", e)))?;
         
@@ -612,7 +649,7 @@ impl Client {
     
     /// Subscribe to a Space's operation stream
     pub async fn subscribe_to_space(&self, space_id: &SpaceId) -> Result<()> {
-        let topic = format!("space/{}", space_id.0);
+        let topic = format!("space/{}", ::hex::encode(&space_id.0[..8]));
         let mut network = self.network.write().await;
         network.subscribe(&topic).await?;
         

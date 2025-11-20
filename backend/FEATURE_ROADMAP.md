@@ -193,6 +193,7 @@
 4. ✅ Message deletion system - **DONE**
 5. ✅ Integration test organization - **DONE**
 6. ✅ Storage Layer Phase 1 - **DONE** (24 tests passing)
+7. ✅ Storage Layer Phase 2 - **DONE** (7 tests passing)
 
 ### Completed This Sprint:
 - **Permissions System**: 21 tests (13 unit + 7 MLS + 1 integration)
@@ -204,20 +205,29 @@
   - Message indexing (thread, user, message ID)
   - CRDT vector clocks and tombstones
   - All tests passing in 1.58s
+- **Storage Layer Phase 2**: CRDT Synchronization Protocol (7 tests)
+  - Sync request/response message types
+  - Vector clock comparison and conflict resolution
+  - Tombstone propagation for deletion sync
+  - Bidirectional sync with atomic updates
+  - All 31 storage tests passing in 8.15s
 - **Privacy Score**: 85% (cryptographic permission enforcement + encrypted storage)
+- **Total Test Count**: ~160 tests passing
 
 ### Next Steps:
-**Option A: Storage Phase 2** (CRDT Sync Implementation)
-- Offline message synchronization
-- Conflict resolution with vector clocks
-- Sync protocol implementation
-- **Why:** Complete storage layer, enable offline-first
-
-**Option B: Storage Phase 3** (Optimization)
+**Option A: Storage Phase 3** (Optimization)
 - Lazy blob loading (on-demand fetch)
-- Compression (LZ4)
+- Compression (LZ4 before encryption)
 - Relay reputation caching
-- **Why:** Performance improvements
+- Thread preview indexing
+- **Why:** Performance improvements for large datasets
+
+**Option B: Client Integration**
+- Update Client to use new Storage API
+- Wire storage into message operations
+- Add persistence to CRDT operations
+- Integration tests with real storage
+- **Why:** Make storage layer functional in application
 
 **Option C: Security Hardening**
 - Onion routing for blob transfers (3-hop minimum)

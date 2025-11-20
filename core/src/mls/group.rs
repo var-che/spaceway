@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn test_create_group() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let user_id = create_test_user_id();
         let keypair = create_test_keypair();
         let config = MlsGroupConfig::default();
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn test_epoch_starts_at_zero() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let user_id = create_test_user_id();
         let keypair = create_test_keypair();
         let config = MlsGroupConfig::default();
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn test_creator_is_admin() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let user_id = create_test_user_id();
         let keypair = create_test_keypair();
         let config = MlsGroupConfig::default();
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_role_management() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let admin_id = create_test_user_id();
         let user_id = UserId([2u8; 32]);
         let keypair = create_test_keypair();
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn test_permission_enforcement() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let admin_id = create_test_user_id();
         let member_id = UserId([2u8; 32]);
         let keypair = create_test_keypair();
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn test_permission_checks() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let admin_id = create_test_user_id();
         let member_id = UserId([2u8; 32]);
         let keypair = create_test_keypair();
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_remove_member() {
         let provider = create_provider();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let admin_id = create_test_user_id();
         let user_id = UserId([2u8; 32]);
         let keypair = create_test_keypair();

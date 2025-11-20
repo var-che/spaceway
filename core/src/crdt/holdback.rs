@@ -288,7 +288,7 @@ mod tests {
             channel_id: None,
             thread_id: None,
             op_type: OpType::PostMessage(OpPayload::PostMessage {
-                message_id: MessageId(Uuid::new_v4()),
+                message_id: MessageId::new(),
                 content: "Test message".to_string(),
             }),
             prev_ops,
@@ -306,7 +306,7 @@ mod tests {
         
         let dep_id = OpId(Uuid::new_v4());
         let op_id = OpId(Uuid::new_v4());
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         
         let op = create_test_op(op_id, space_id, vec![dep_id]);
         
@@ -327,7 +327,7 @@ mod tests {
         let mut queue = HoldbackQueue::new();
         
         let op_id = OpId(Uuid::new_v4());
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         
         let op = create_test_op(op_id, space_id, vec![]);
         
@@ -349,7 +349,7 @@ mod tests {
         
         let op_id = OpId(Uuid::new_v4());
         let dep_id = OpId(Uuid::new_v4());
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         
         let op = create_test_op(op_id, space_id, vec![dep_id]);
         
@@ -371,7 +371,7 @@ mod tests {
         let dep1 = OpId(Uuid::new_v4());
         let dep2 = OpId(Uuid::new_v4());
         let op_id = OpId(Uuid::new_v4());
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         
         let op = create_test_op(op_id, space_id, vec![dep1, dep2]);
         
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_queue_full() {
         let mut queue = HoldbackQueue::new();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         let dep_id = OpId(Uuid::new_v4());
         
         // Fill queue to capacity

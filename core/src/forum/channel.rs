@@ -339,8 +339,8 @@ mod tests {
     #[test]
     fn test_create_channel() {
         let mut manager = ChannelManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
+        let channel_id = ChannelId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
@@ -369,12 +369,12 @@ mod tests {
     #[test]
     fn test_list_channels() {
         let mut manager = ChannelManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
-        let channel1 = ChannelId(uuid::Uuid::new_v4());
-        let channel2 = ChannelId(uuid::Uuid::new_v4());
+        let channel1 = ChannelId::new();
+        let channel2 = ChannelId::new();
         
         manager.create_channel(
             channel1,
@@ -403,8 +403,8 @@ mod tests {
     #[test]
     fn test_archive_channel() {
         let mut manager = ChannelManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
+        let channel_id = ChannelId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         

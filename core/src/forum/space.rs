@@ -854,7 +854,7 @@ mod tests {
     fn test_create_space() {
         let mut manager = SpaceManager::new();
         let provider = create_provider();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
@@ -883,7 +883,7 @@ mod tests {
     fn test_add_member() {
         let mut manager = SpaceManager::new();
         let provider = create_provider();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
@@ -915,7 +915,7 @@ mod tests {
     
     #[test]
     fn test_space_epoch() {
-        let space_id = SpaceId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
         let owner = crate::crypto::signing::Keypair::generate().user_id();
         let mut space = Space::new(
             space_id,

@@ -1,9 +1,14 @@
 //! Core types and identifiers used throughout the system
+//!
+//! Security Note: Public identifiers (MessageId, ThreadId, SpaceId, etc.) use
+//! content-addressed hashing to prevent forgery and enable self-verification.
 
 use minicbor::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
 use std::fmt;
 use uuid::Uuid;
+use anyhow::Result;
 
 /// User identity (Ed25519 public key)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode, Serialize, Deserialize)]
@@ -11,8 +16,21 @@ use uuid::Uuid;
 pub struct UserId(#[b(0)] pub [u8; 32]);
 
 impl UserId {
+    pub fn new() -> Self {
+        // For testing - generate random user ID
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub fn to_hex(&self) -> String {
+        ::hex::encode(&self.0)
     }
 }
 
@@ -33,46 +51,315 @@ impl fmt::Display for UserId {
 pub struct DeviceId(pub Uuid);
 
 /// Space identifier (community/server)
+/// Content-addressed: Hash(creator_pubkey || space_name || creation_timestamp)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-pub struct SpaceId(pub Uuid);
+pub struct SpaceId(pub [u8; 32]);
+
+impl SpaceId {
+    /// Create a content-addressed SpaceId from its defining properties
+    pub fn from_content(creator: &UserId, name: &str, timestamp: u64) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"SPACE_V1:");
+        hasher.update(creator.as_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(&timestamp.to_le_bytes());
+        
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash);
+        Self(bytes)
+    }
+
+    /// Verify that this ID matches the given content
+    pub fn verify(&self, creator: &UserId, name: &str, timestamp: u64) -> bool {
+        let expected = Self::from_content(creator, name, timestamp);
+        self.0 == expected.0
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// For testing only - generate random SpaceId
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for SpaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "space_{}", hex::encode(&self.0[..8]))
+    }
+}
 
 /// Channel identifier
+/// Content-addressed: Hash(space_id || channel_name || creator_pubkey)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-pub struct ChannelId(pub Uuid);
+pub struct ChannelId(pub [u8; 32]);
+
+impl ChannelId {
+    /// Create a content-addressed ChannelId from its defining properties
+    pub fn from_content(space_id: &SpaceId, name: &str, creator: &UserId) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"CHANNEL_V1:");
+        hasher.update(space_id.as_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(creator.as_bytes());
+        
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash);
+        Self(bytes)
+    }
+
+    /// Verify that this ID matches the given content
+    pub fn verify(&self, space_id: &SpaceId, name: &str, creator: &UserId) -> bool {
+        let expected = Self::from_content(space_id, name, creator);
+        self.0 == expected.0
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// For testing only - generate random ChannelId
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for ChannelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "channel_{}", hex::encode(&self.0[..8]))
+    }
+}
 
 /// Thread identifier
+/// Content-addressed: Hash(channel_id || creator_pubkey || first_message_hash || timestamp)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-pub struct ThreadId(pub Uuid);
+pub struct ThreadId(pub [u8; 32]);
 
 impl ThreadId {
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        self.0.as_bytes()
+    /// Create a content-addressed ThreadId from its defining properties
+    pub fn from_content(
+        channel_id: &ChannelId,
+        creator: &UserId,
+        first_message_hash: &[u8; 32],
+        timestamp: u64,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"THREAD_V1:");
+        hasher.update(channel_id.as_bytes());
+        hasher.update(creator.as_bytes());
+        hasher.update(first_message_hash);
+        hasher.update(&timestamp.to_le_bytes());
+        
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash);
+        Self(bytes)
+    }
+
+    /// Verify that this ID matches the given content
+    pub fn verify(
+        &self,
+        channel_id: &ChannelId,
+        creator: &UserId,
+        first_message_hash: &[u8; 32],
+        timestamp: u64,
+    ) -> bool {
+        let expected = Self::from_content(channel_id, creator, first_message_hash, timestamp);
+        self.0 == expected.0
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn to_hex(&self) -> String {
+        ::hex::encode(&self.0)
+    }
+
+    /// For testing only - generate random ThreadId
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
     }
 }
 
 impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "thread_{}", hex::encode(&self.0[..8]))
     }
 }
 
-/// Post identifier
+/// Post identifier (same as MessageId, but for top-level posts)
+/// Content-addressed: Hash(author || thread_id || content_hash || timestamp)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-pub struct PostId(pub Uuid);
+pub struct PostId(pub [u8; 32]);
+
+impl PostId {
+    /// Create a content-addressed PostId from its defining properties
+    pub fn from_content(
+        author: &UserId,
+        thread_id: &ThreadId,
+        content_hash: &[u8; 32],
+        timestamp: u64,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"POST_V1:");
+        hasher.update(author.as_bytes());
+        hasher.update(thread_id.as_bytes());
+        hasher.update(content_hash);
+        hasher.update(&timestamp.to_le_bytes());
+        
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash);
+        Self(bytes)
+    }
+
+    /// Verify that this ID matches the given content
+    pub fn verify(
+        &self,
+        author: &UserId,
+        thread_id: &ThreadId,
+        content_hash: &[u8; 32],
+        timestamp: u64,
+    ) -> bool {
+        let expected = Self::from_content(author, thread_id, content_hash, timestamp);
+        self.0 == expected.0
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// For testing only - generate random PostId
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for PostId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "post_{}", hex::encode(&self.0[..8]))
+    }
+}
 
 /// Message identifier
+/// Content-addressed: Hash(author || thread_id || content_hash || timestamp || parent_id)
+/// This ensures messages are unforgeable and self-verifying in the DHT
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-pub struct MessageId(pub Uuid);
+pub struct MessageId(pub [u8; 32]);
 
 impl MessageId {
-    pub fn from_string(s: &str) -> Result<Self, uuid::Error> {
-        Ok(Self(Uuid::parse_str(s)?))
+    /// Create a content-addressed MessageId from its defining properties
+    /// 
+    /// # Security
+    /// - The ID is derived from content, making it unforgeable
+    /// - Anyone can verify the ID matches the content
+    /// - DHT lookups are tamper-proof (wrong content = wrong hash = wrong ID)
+    pub fn from_content(
+        author: &UserId,
+        thread_id: &ThreadId,
+        content_hash: &[u8; 32],  // SHA256 of message content
+        timestamp: u64,
+        parent_id: Option<&MessageId>,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"MESSAGE_V1:");
+        hasher.update(author.as_bytes());
+        hasher.update(thread_id.as_bytes());
+        hasher.update(content_hash);
+        hasher.update(&timestamp.to_le_bytes());
+        
+        if let Some(parent) = parent_id {
+            hasher.update(b"REPLY:");
+            hasher.update(parent.as_bytes());
+        }
+        
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash);
+        Self(bytes)
+    }
+
+    /// Verify that this ID matches the given content
+    /// 
+    /// Returns true if the ID was correctly derived from the provided properties
+    pub fn verify(
+        &self,
+        author: &UserId,
+        thread_id: &ThreadId,
+        content_hash: &[u8; 32],
+        timestamp: u64,
+        parent_id: Option<&MessageId>,
+    ) -> bool {
+        let expected = Self::from_content(author, thread_id, content_hash, timestamp, parent_id);
+        self.0 == expected.0
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Parse from hex string (for DHT keys)
+    pub fn from_hex(s: &str) -> Result<Self, anyhow::Error> {
+        let bytes = ::hex::decode(s)
+            .map_err(|e| anyhow::anyhow!("Invalid hex: {}", e))?;
+        if bytes.len() != 32 {
+            return Err(anyhow::anyhow!("MessageId must be 32 bytes, got {}", bytes.len()));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&bytes);
+        Ok(Self(array))
+    }
+
+    /// Convert to hex string (for DHT keys)
+    pub fn to_hex(&self) -> String {
+        ::hex::encode(&self.0)
+    }
+
+    /// For testing only - generate random MessageId
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
+        Self(bytes)
+    }
+
+    /// For backward compatibility - parse from hex string (deprecated)
+    #[deprecated(note = "Use from_hex or from_content instead")]
+    pub fn from_string(s: &str) -> Result<Self, anyhow::Error> {
+        Self::from_hex(s)
     }
 }
 
 impl fmt::Display for MessageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "msg_{}", hex::encode(&self.0[..8]))
     }
 }
 
@@ -515,7 +802,7 @@ impl<'b, C> Decode<'b, C> for DeviceId {
 
 impl<C> Encode<C> for SpaceId {
     fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
-        e.bytes(self.0.as_bytes())?;
+        e.bytes(&self.0)?;
         Ok(())
     }
 }
@@ -523,14 +810,18 @@ impl<C> Encode<C> for SpaceId {
 impl<'b, C> Decode<'b, C> for SpaceId {
     fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let bytes = d.bytes()?;
-        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
-        Ok(SpaceId(uuid))
+        if bytes.len() != 32 {
+            return Err(minicbor::decode::Error::message("SpaceId must be 32 bytes"));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(SpaceId(array))
     }
 }
 
 impl<C> Encode<C> for ChannelId {
     fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
-        e.bytes(self.0.as_bytes())?;
+        e.bytes(&self.0)?;
         Ok(())
     }
 }
@@ -538,14 +829,18 @@ impl<C> Encode<C> for ChannelId {
 impl<'b, C> Decode<'b, C> for ChannelId {
     fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let bytes = d.bytes()?;
-        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
-        Ok(ChannelId(uuid))
+        if bytes.len() != 32 {
+            return Err(minicbor::decode::Error::message("ChannelId must be 32 bytes"));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(ChannelId(array))
     }
 }
 
 impl<C> Encode<C> for ThreadId {
     fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
-        e.bytes(self.0.as_bytes())?;
+        e.bytes(&self.0)?;
         Ok(())
     }
 }
@@ -553,14 +848,18 @@ impl<C> Encode<C> for ThreadId {
 impl<'b, C> Decode<'b, C> for ThreadId {
     fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let bytes = d.bytes()?;
-        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
-        Ok(ThreadId(uuid))
+        if bytes.len() != 32 {
+            return Err(minicbor::decode::Error::message("ThreadId must be 32 bytes"));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(ThreadId(array))
     }
 }
 
 impl<C> Encode<C> for PostId {
     fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
-        e.bytes(self.0.as_bytes())?;
+        e.bytes(&self.0)?;
         Ok(())
     }
 }
@@ -568,14 +867,18 @@ impl<C> Encode<C> for PostId {
 impl<'b, C> Decode<'b, C> for PostId {
     fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let bytes = d.bytes()?;
-        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
-        Ok(PostId(uuid))
+        if bytes.len() != 32 {
+            return Err(minicbor::decode::Error::message("PostId must be 32 bytes"));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(PostId(array))
     }
 }
 
 impl<C> Encode<C> for MessageId {
     fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, _ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
-        e.bytes(self.0.as_bytes())?;
+        e.bytes(&self.0)?;
         Ok(())
     }
 }
@@ -583,8 +886,12 @@ impl<C> Encode<C> for MessageId {
 impl<'b, C> Decode<'b, C> for MessageId {
     fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let bytes = d.bytes()?;
-        let uuid = Uuid::from_slice(bytes).map_err(|_| minicbor::decode::Error::message("invalid UUID"))?;
-        Ok(MessageId(uuid))
+        if bytes.len() != 32 {
+            return Err(minicbor::decode::Error::message("MessageId must be 32 bytes"));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(MessageId(array))
     }
 }
 

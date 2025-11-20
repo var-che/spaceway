@@ -204,8 +204,20 @@ impl ThreadManager {
             .unwrap()
             .as_secs();
         
-        // Generate first message ID
-        let first_message_id = MessageId(uuid::Uuid::new_v4());
+        // Hash the first message content
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(first_message_content.as_bytes());
+        let content_hash_array: [u8; 32] = hasher.finalize().into();
+        
+        // Generate first message ID from content
+        let first_message_id = MessageId::from_content(
+            &creator,
+            &thread_id,
+            &content_hash_array,
+            current_time,
+            None,
+        );
         
         // Create Thread
         let thread = Thread::new(
@@ -571,9 +583,9 @@ mod tests {
     #[test]
     fn test_create_thread() {
         let mut manager = ThreadManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
-        let thread_id = ThreadId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
+        let channel_id = ChannelId::new();
+        let thread_id = ThreadId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
@@ -606,9 +618,9 @@ mod tests {
     #[test]
     fn test_post_message() {
         let mut manager = ThreadManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
-        let thread_id = ThreadId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
+        let channel_id = ChannelId::new();
+        let thread_id = ThreadId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         
@@ -623,7 +635,7 @@ mod tests {
             EpochId(0),
         ).unwrap();
         
-        let message_id = MessageId(uuid::Uuid::new_v4());
+        let message_id = MessageId::new();
         let result = manager.post_message(
             message_id,
             thread_id,
@@ -645,9 +657,9 @@ mod tests {
     #[test]
     fn test_edit_message() {
         let mut manager = ThreadManager::new();
-        let space_id = SpaceId(uuid::Uuid::new_v4());
-        let channel_id = ChannelId(uuid::Uuid::new_v4());
-        let thread_id = ThreadId(uuid::Uuid::new_v4());
+        let space_id = SpaceId::new();
+        let channel_id = ChannelId::new();
+        let thread_id = ThreadId::new();
         let creator_keypair = crate::crypto::signing::Keypair::generate();
         let creator = creator_keypair.user_id();
         

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 /// Generate a valid CRDT operation
 fn arb_crdt_op() -> impl Strategy<Value = CrdtOp> {
-    let space_id = SpaceId(Uuid::new_v4());
+    let space_id = SpaceId::new();
     let keypair = Keypair::generate();
     let user_id = keypair.user_id();
     
@@ -29,7 +29,7 @@ fn arb_crdt_op() -> impl Strategy<Value = CrdtOp> {
                 channel_id: None,
                 thread_id: None,
                 op_type: OpType::PostMessage(OpPayload::PostMessage {
-                    message_id: MessageId(Uuid::new_v4()),
+                    message_id: MessageId::new(),
                     content,
                 }),
                 prev_ops: vec![],
@@ -208,11 +208,11 @@ mod unit_tests {
         
         let mut op = CrdtOp {
             op_id: OpId(Uuid::new_v4()),
-            space_id: SpaceId(Uuid::new_v4()),
+            space_id: SpaceId::new(),
             channel_id: None,
             thread_id: None,
             op_type: OpType::PostMessage(OpPayload::PostMessage {
-                message_id: MessageId(Uuid::new_v4()),
+                message_id: MessageId::new(),
                 content: "Test".to_string(),
             }),
             prev_ops: vec![],
@@ -238,11 +238,11 @@ mod unit_tests {
         
         let mut op = CrdtOp {
             op_id: OpId(Uuid::new_v4()),
-            space_id: SpaceId(Uuid::new_v4()),
+            space_id: SpaceId::new(),
             channel_id: None,
             thread_id: None,
             op_type: OpType::PostMessage(OpPayload::PostMessage {
-                message_id: MessageId(Uuid::new_v4()),
+                message_id: MessageId::new(),
                 content: "Test".to_string(),
             }),
             prev_ops: vec![],

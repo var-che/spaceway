@@ -82,19 +82,19 @@ impl CommandHandler {
         println!("{}", "Current Context:".bright_cyan().bold());
         
         if let Some(space_id) = &self.current_space {
-            println!("  {}: {}", "Space".bright_green(), hex::encode(space_id.0.as_bytes()));
+            println!("  {}: {}", "Space".bright_green(), hex::encode(space_id.0));
         } else {
             println!("  {}: {}", "Space".bright_green(), "none".yellow());
         }
 
         if let Some(channel_id) = &self.current_channel {
-            println!("  {}: {}", "Channel".bright_green(), hex::encode(channel_id.0.as_bytes()));
+            println!("  {}: {}", "Channel".bright_green(), hex::encode(channel_id.0));
         } else {
             println!("  {}: {}", "Channel".bright_green(), "none".yellow());
         }
 
         if let Some(thread_id) = &self.current_thread {
-            println!("  {}: {}", "Thread".bright_green(), hex::encode(thread_id.0.as_bytes()));
+            println!("  {}: {}", "Thread".bright_green(), hex::encode(thread_id.0));
         } else {
             println!("  {}: {}", "Thread".bright_green(), "none".yellow());
         }
@@ -115,7 +115,7 @@ impl CommandHandler {
         } else {
             println!("{} ({}):", "Spaces".bright_cyan().bold(), spaces.len());
             for space in spaces {
-                let id_short = hex::encode(&space.id.0.as_bytes()[..8]);
+                let id_short = hex::encode(&space.id.0[..8]);
                 let marker = if Some(space.id) == self.current_space {
                     "→".bright_green()
                 } else {
@@ -153,7 +153,7 @@ impl CommandHandler {
             self.current_channel = None;
             self.current_thread = None;
 
-            ui::print_success(&format!("Created space: {} ({})", name, hex::encode(&space.id.0.as_bytes()[..8])));
+            ui::print_success(&format!("Created space: {} ({})", name, hex::encode(&space.id.0[..8])));
         } else {
             // Switch to space by ID prefix
             let prefix = args[0];
@@ -163,7 +163,7 @@ impl CommandHandler {
             };
             
             let matches: Vec<_> = spaces.into_iter()
-                .filter(|s| hex::encode(s.id.0.as_bytes()).starts_with(prefix))
+                .filter(|s| hex::encode(s.id.0).starts_with(prefix))
                 .collect();
 
             match matches.len() {
@@ -177,7 +177,7 @@ impl CommandHandler {
                 _ => {
                     ui::print_error("Multiple spaces match that prefix. Be more specific:");
                     for space in matches {
-                        println!("  {} - {}", hex::encode(&space.id.0.as_bytes()[..8]), space.name);
+                        println!("  {} - {}", hex::encode(&space.id.0[..8]), space.name);
                     }
                 }
             }
@@ -199,7 +199,7 @@ impl CommandHandler {
         } else {
             println!("{} ({}):", "Channels".bright_cyan().bold(), channels.len());
             for channel in channels {
-                let id_short = hex::encode(&channel.id.0.as_bytes()[..8]);
+                let id_short = hex::encode(&channel.id.0[..8]);
                 let marker = if Some(channel.id) == self.current_channel {
                     "→".bright_green()
                 } else {
@@ -240,7 +240,7 @@ impl CommandHandler {
             self.current_channel = Some(channel.id);
             self.current_thread = None;
 
-            ui::print_success(&format!("Created channel: {} ({})", name, hex::encode(&channel.id.0.as_bytes()[..8])));
+            ui::print_success(&format!("Created channel: {} ({})", name, hex::encode(&channel.id.0[..8])));
         } else {
             let prefix = args[0];
             let channels = {
@@ -249,7 +249,7 @@ impl CommandHandler {
             };
             
             let matches: Vec<_> = channels.into_iter()
-                .filter(|c| hex::encode(c.id.0.as_bytes()).starts_with(prefix))
+                .filter(|c| hex::encode(c.id.0).starts_with(prefix))
                 .collect();
 
             match matches.len() {
@@ -262,7 +262,7 @@ impl CommandHandler {
                 _ => {
                     ui::print_error("Multiple channels match that prefix. Be more specific:");
                     for channel in matches {
-                        println!("  {} - {}", hex::encode(&channel.id.0.as_bytes()[..8]), channel.name);
+                        println!("  {} - {}", hex::encode(&channel.id.0[..8]), channel.name);
                     }
                 }
             }
@@ -284,7 +284,7 @@ impl CommandHandler {
         } else {
             println!("{} ({}):", "Threads".bright_cyan().bold(), threads.len());
             for thread in threads {
-                let id_short = hex::encode(&thread.id.0.as_bytes()[..8]);
+                let id_short = hex::encode(&thread.id.0[..8]);
                 let marker = if Some(thread.id) == self.current_thread {
                     "→".bright_green()
                 } else {
@@ -326,7 +326,7 @@ impl CommandHandler {
 
             self.current_thread = Some(thread.id);
 
-            ui::print_success(&format!("Created thread: {} ({})", title, hex::encode(&thread.id.0.as_bytes()[..8])));
+            ui::print_success(&format!("Created thread: {} ({})", title, hex::encode(&thread.id.0[..8])));
         } else {
             let prefix = args[0];
             let threads = {
@@ -335,7 +335,7 @@ impl CommandHandler {
             };
             
             let matches: Vec<_> = threads.into_iter()
-                .filter(|t| hex::encode(t.id.0.as_bytes()).starts_with(prefix))
+                .filter(|t| hex::encode(t.id.0).starts_with(prefix))
                 .collect();
 
             match matches.len() {
@@ -349,7 +349,7 @@ impl CommandHandler {
                     ui::print_error("Multiple threads match that prefix. Be more specific:");
                     for thread in matches {
                         let title = thread.title.as_deref().unwrap_or("Untitled");
-                        println!("  {} - {}", hex::encode(&thread.id.0.as_bytes()[..8]), title);
+                        println!("  {} - {}", hex::encode(&thread.id.0[..8]), title);
                     }
                 }
             }
@@ -382,7 +382,7 @@ impl CommandHandler {
                         .map(|dt| dt.format("%H:%M:%S").to_string())
                         .unwrap_or_else(|| "?".to_string())
                         .bright_black(),
-                    hex::encode(&msg.id.0.as_bytes()[..4]).bright_black(),
+                    hex::encode(&msg.id.0[..4]).bright_black(),
                     deleted
                 );
                 println!("  {} {}", "│".bright_black(), msg.content);
@@ -406,7 +406,7 @@ impl CommandHandler {
             client.post_message(space_id, thread_id, text.to_string()).await?
         };
         
-        ui::print_success(&format!("Message sent ({})", hex::encode(&msg.id.0.as_bytes()[..4])));
+        ui::print_success(&format!("Message sent ({})", hex::encode(&msg.id.0[..4])));
         Ok(())
     }
 }

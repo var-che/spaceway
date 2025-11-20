@@ -64,6 +64,10 @@ tracing-subscriber = "0.3"
 name = "descord_core"
 path = "src/lib.rs"
 
+[features]
+# Enable test helper methods for integration tests
+test-helpers = []
+
 [[example]]
 name = "test_three_person"
 path = "examples/test_three_person.rs"

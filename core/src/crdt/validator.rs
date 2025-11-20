@@ -259,7 +259,7 @@ mod tests {
             channel_id: None,
             thread_id: None,
             op_type: OpType::PostMessage(OpPayload::PostMessage {
-                message_id: MessageId(Uuid::new_v4()),
+                message_id: MessageId::new(),
                 content: "Test message".to_string(),
             }),
             prev_ops,
@@ -285,7 +285,7 @@ mod tests {
         let missing_dep = OpId(Uuid::new_v4());
         let op = create_test_op(
             UserId([1u8; 32]),
-            SpaceId(Uuid::new_v4()),
+            SpaceId::new(),
             EpochId(0),
             vec![missing_dep],
         );
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_validate_future_epoch() {
         let mut validator = OpValidator::new();
-        let space_id = SpaceId(Uuid::new_v4());
+        let space_id = SpaceId::new();
         
         // Set local epoch to 5
         validator.update_epoch(space_id, EpochId(5));
@@ -335,7 +335,7 @@ mod tests {
         
         let mut op = create_test_op(
             UserId([1u8; 32]),
-            SpaceId(Uuid::new_v4()),
+            SpaceId::new(),
             EpochId(0),
             vec![],
         );

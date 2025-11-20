@@ -13,13 +13,16 @@ use descord_core::{
     types::{SpaceId, UserId},
 };
 use anyhow::Result;
-use uuid::Uuid;
 
 #[test]
 fn test_full_permissions_system() -> Result<()> {
     // Setup
     let provider = create_provider();
-    let space_id = SpaceId(Uuid::new_v4());
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut space_bytes = [0u8; 32];
+    rng.fill(&mut space_bytes);
+    let space_id = SpaceId(space_bytes);
     
     // Create three users
     let alice_id = UserId([1u8; 32]); // Will be Admin

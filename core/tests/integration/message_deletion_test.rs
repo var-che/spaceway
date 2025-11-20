@@ -15,12 +15,11 @@
 /// - This is a fundamental trade-off of decentralized architecture
 
 use descord_core::{
-    Permissions, Role,
+    Role,
     mls::{MlsGroup, MlsGroupConfig, provider::create_provider},
     types::{SpaceId, UserId, MessageId},
 };
 use anyhow::Result;
-use uuid::Uuid;
 
 /// Simulated message structure for testing
 #[derive(Debug, Clone)]
@@ -34,8 +33,12 @@ struct Message {
 
 impl Message {
     fn new(author: UserId, content: String) -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes);
         Self {
-            id: MessageId(Uuid::new_v4()),
+            id: MessageId(bytes),
             author,
             content,
             deleted: false,
@@ -56,7 +59,11 @@ impl Message {
 #[test]
 fn test_message_deletion_system() -> Result<()> {
     let provider = create_provider();
-    let space_id = SpaceId(Uuid::new_v4());
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut space_bytes = [0u8; 32];
+    rng.fill(&mut space_bytes);
+    let space_id = SpaceId(space_bytes);
     
     // Setup: Alice (Admin), Bob (Moderator), Charlie (Member), Dave (Member)
     let alice_id = UserId([1u8; 32]);
@@ -241,7 +248,11 @@ fn test_deletion_privacy_implications() -> Result<()> {
     println!("\n=== DELETION PRIVACY IMPLICATIONS ===\n");
     
     let provider = create_provider();
-    let space_id = SpaceId(Uuid::new_v4());
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut space_bytes = [0u8; 32];
+    rng.fill(&mut space_bytes);
+    let space_id = SpaceId(space_bytes);
     
     let alice_id = UserId([1u8; 32]);
     let attacker_id = UserId([2u8; 32]);
@@ -310,7 +321,11 @@ fn test_deletion_synchronization() -> Result<()> {
     println!("\n=== DELETION SYNCHRONIZATION TEST ===\n");
     
     let provider = create_provider();
-    let space_id = SpaceId(Uuid::new_v4());
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut space_bytes = [0u8; 32];
+    rng.fill(&mut space_bytes);
+    let space_id = SpaceId(space_bytes);
     
     let alice_id = UserId([1u8; 32]);
     let bob_id = UserId([2u8; 32]);

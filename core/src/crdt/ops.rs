@@ -363,7 +363,7 @@ mod tests {
     fn test_crdt_op_signing_bytes() {
         let op = CrdtOp {
             op_id: OpId(Uuid::new_v4()),
-            space_id: SpaceId(Uuid::new_v4()),
+            space_id: SpaceId::new(),
             channel_id: None,
             thread_id: None,
             op_type: OpType::CreateSpace(OpPayload::CreateSpace {
@@ -386,11 +386,11 @@ mod tests {
     fn test_crdt_op_serialization() {
         let op = CrdtOp {
             op_id: OpId(Uuid::new_v4()),
-            space_id: SpaceId(Uuid::new_v4()),
+            space_id: SpaceId::new(),
             channel_id: None,
             thread_id: None,
             op_type: OpType::PostMessage(OpPayload::PostMessage {
-                message_id: MessageId(Uuid::new_v4()),
+                message_id: MessageId::new(),
                 content: "Hello world".to_string(),
             }),
             prev_ops: vec![],

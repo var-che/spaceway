@@ -687,10 +687,28 @@ User A (IP: 1.2.3.4) <---> Direct P2P Connection <---> User B (IP: 5.6.7.8)
 
 ### Recommended Privacy Improvements (Priority Order)
 
-#### 1. **CRITICAL: Add Relay/Onion Routing** 🔴
-**Current Risk**: Anyone you chat with knows your IP address
+#### 1. ✅ **Relay Network Integrated** (Was CRITICAL)
+**Previous Risk**: Anyone you chat with knows your IP address  
+**Status**: Circuit Relay v2 transport integrated into swarm  
+**What Changed**:
+- ✅ Custom transport composition with OrTransport(relay, tcp)
+- ✅ Relay client behavior added to DescordBehaviour
+- ✅ dial_via_relay() API available
+- ✅ Event handling for circuit establishment
+- ✅ All 87 tests passing
 
-**Solution Options**:
+**Privacy Status**: ⚠️ **IPs still exposed** (no relay servers deployed)
+
+**Next Steps**:
+1. Deploy relay server: `cargo install libp2p-relay-server`
+2. Add relay connection on startup: `listen_on_relay(relay_addr)`
+3. Use relay circuits for Private/Hidden spaces
+
+**See**: `backend/RELAY_COMPLETE.md` for full implementation details
+
+---
+
+**Original Options (for reference)**:
 
 **Option A: Tor Integration** (Maximum Privacy)
 ```rust

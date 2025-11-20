@@ -10,8 +10,9 @@ use tokio::time::{sleep, Duration};
 /// Helper to create a test client
 async fn create_test_client(name: &str) -> Result<Client> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from(format!("./test-data/{}", name)),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
@@ -19,16 +20,9 @@ async fn create_test_client(name: &str) -> Result<Client> {
     Ok(Client::new(keypair, config)?)
 }
 
-/// Clean up test data
-async fn cleanup(name: &str) {
-    let path = PathBuf::from(format!("./test-data/{}", name));
-    let _ = tokio::fs::remove_dir_all(&path).await;
-}
-
 #[tokio::test]
 async fn test_single_client_basic_operations() -> Result<()> {
     let name = "test_single_client";
-    cleanup(name).await;
     
     let client = create_test_client(name).await?;
     let user_id = client.user_id();
@@ -111,14 +105,14 @@ async fn test_single_client_basic_operations() -> Result<()> {
     assert_eq!(edited_msg.content, "This is an edited message");
     assert!(edited_msg.edited_at.is_some());
     
-    cleanup(name).await;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_blob_storage() -> Result<()> {
     let name = "test_blob_storage";
-    cleanup(name).await;
+
     
     let client = create_test_client(name).await?;
     
@@ -145,7 +139,7 @@ async fn test_blob_storage() -> Result<()> {
     let retrieved_large = client.retrieve_blob(&large_metadata.hash).await?;
     assert_eq!(retrieved_large.len(), large_data.len());
     
-    cleanup(name).await;
+
     Ok(())
 }
 
@@ -153,8 +147,8 @@ async fn test_blob_storage() -> Result<()> {
 async fn test_multi_client_sync() -> Result<()> {
     let alice_name = "test_alice";
     let bob_name = "test_bob";
-    cleanup(alice_name).await;
-    cleanup(bob_name).await;
+
+
     
     // Create two clients
     let alice = create_test_client(alice_name).await?;
@@ -246,8 +240,8 @@ async fn test_multi_client_sync() -> Result<()> {
         println!("✓ Alice received Bob's message!");
     }
     
-    cleanup(alice_name).await;
-    cleanup(bob_name).await;
+
+
     Ok(())
 }
 
@@ -255,8 +249,8 @@ async fn test_multi_client_sync() -> Result<()> {
 async fn test_concurrent_operations() -> Result<()> {
     let alice_name = "test_concurrent_alice";
     let bob_name = "test_concurrent_bob";
-    cleanup(alice_name).await;
-    cleanup(bob_name).await;
+
+
     
     let alice = create_test_client(alice_name).await?;
     let bob = create_test_client(bob_name).await?;
@@ -331,8 +325,8 @@ async fn test_concurrent_operations() -> Result<()> {
     assert_eq!(alice_msg_ids, bob_msg_ids, "Message sets should be identical");
     println!("✓ Both clients converged to the same state!");
     
-    cleanup(alice_name).await;
-    cleanup(bob_name).await;
+
+
     Ok(())
 }
 
@@ -340,8 +334,8 @@ async fn test_concurrent_operations() -> Result<()> {
 async fn test_crdt_commutativity() -> Result<()> {
     let client1_name = "test_crdt_1";
     let client2_name = "test_crdt_2";
-    cleanup(client1_name).await;
-    cleanup(client2_name).await;
+
+
     
     let client1 = create_test_client(client1_name).await?;
     let client2 = create_test_client(client2_name).await?;
@@ -385,7 +379,7 @@ async fn test_crdt_commutativity() -> Result<()> {
     
     println!("✓ CRDT commutativity verified!");
     
-    cleanup(client1_name).await;
-    cleanup(client2_name).await;
+
+
     Ok(())
 }

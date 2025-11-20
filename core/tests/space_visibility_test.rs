@@ -6,8 +6,9 @@ use std::path::PathBuf;
 /// Helper to create a test client
 fn create_test_client(name: &str) -> Result<Client> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from(format!("./test-data/{}", name)),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };

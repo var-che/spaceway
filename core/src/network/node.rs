@@ -12,6 +12,12 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm,
     futures::StreamExt,
+    core::{
+        muxing::StreamMuxerBox,
+        transport::{Boxed, OrTransport},
+        upgrade,
+    },
+    Transport,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -67,7 +73,7 @@ pub enum NetworkEvent {
     DhtQueryComplete,
 }
 
-/// Network behavior combining Kademlia DHT and GossipSub
+/// Network behavior combining Kademlia DHT, GossipSub, and Relay Client
 #[derive(NetworkBehaviour)]
 pub struct DescordBehaviour {
     /// Kademlia DHT for peer discovery
@@ -75,6 +81,9 @@ pub struct DescordBehaviour {
     
     /// GossipSub for topic-based messaging
     pub gossipsub: gossipsub::Behaviour,
+    
+    /// Relay client for connecting via relays (IP privacy)
+    pub relay_client: relay::client::Behaviour,
 }
 
 /// P2P network node with message-passing interface
@@ -130,25 +139,36 @@ impl NetworkNode {
         )
         .map_err(|e| Error::Network(format!("GossipSub creation error: {}", e)))?;
         
-        // Create behavior WITHOUT relay client for now (relay requires different transport setup)
-        // TODO: Integrate relay transport properly with custom transport builder
+        // Create relay client behavior
+        let (relay_transport, relay_client) = relay::client::new(local_peer_id);
+        
+        // Create behavior with relay client
         let behaviour = DescordBehaviour {
             kademlia,
             gossipsub,
+            relay_client,
         };
         
-        // Create swarm using new builder API
-        let swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .map_err(|e| Error::Network(format!("Transport config error: {}", e)))?
-            .with_behaviour(|_| behaviour)
-            .map_err(|e| Error::Network(format!("Behaviour error: {}", e)))?
-            .build();
+        // Build transport: TCP with relay support
+        // This allows both direct TCP connections AND relay circuits
+        let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true));
+        
+        // Compose: Relay OR TCP (try relay first for privacy, fallback to TCP)
+        let transport = OrTransport::new(relay_transport, tcp_transport)
+            .upgrade(upgrade::Version::V1)
+            .authenticate(noise::Config::new(&local_key).map_err(|e| Error::Network(format!("Noise config error: {}", e)))?)
+            .multiplex(yamux::Config::default())
+            .timeout(Duration::from_secs(20))
+            .boxed();
+        
+        // Create swarm with custom transport
+        let swarm = Swarm::new(
+            transport,
+            behaviour,
+            local_peer_id,
+            libp2p::swarm::Config::with_tokio_executor()
+                .with_idle_connection_timeout(Duration::from_secs(60))
+        );
         
         // Create channels
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -344,6 +364,9 @@ impl NetworkWorker {
             DescordBehaviourEvent::Gossipsub(gossipsub_event) => {
                 self.handle_gossipsub_event(gossipsub_event).await;
             }
+            DescordBehaviourEvent::RelayClient(relay_event) => {
+                self.handle_relay_client_event(relay_event).await;
+            }
         }
     }
     
@@ -391,6 +414,25 @@ impl NetworkWorker {
                 });
             }
             _ => {}
+        }
+    }
+    
+    /// Handle Relay Client events
+    async fn handle_relay_client_event(&mut self, event: relay::client::Event) {
+        match event {
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                println!("✓ Relay reservation accepted by {:?}", relay_peer_id);
+            }
+            relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                println!("✓ Circuit established via relay {:?} (IP hidden)", relay_peer_id);
+            }
+            relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                println!("✓ Inbound circuit from {:?} (their IP hidden)", src_peer_id);
+            }
+            _ => {
+                // Log all other events for debugging
+                println!("Relay event: {:?}", event);
+            }
         }
     }
 }

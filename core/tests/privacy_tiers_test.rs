@@ -5,8 +5,9 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn test_public_space_privacy_info() -> Result<()> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from("./test-data/privacy-public"),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
@@ -46,8 +47,9 @@ async fn test_public_space_privacy_info() -> Result<()> {
 #[tokio::test]
 async fn test_private_space_privacy_info() -> Result<()> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from("./test-data/privacy-private"),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
@@ -83,8 +85,9 @@ async fn test_private_space_privacy_info() -> Result<()> {
 #[tokio::test]
 async fn test_hidden_space_privacy_info() -> Result<()> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from("./test-data/privacy-hidden"),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
@@ -120,8 +123,9 @@ async fn test_hidden_space_privacy_info() -> Result<()> {
 #[tokio::test]
 async fn test_default_space_uses_private() -> Result<()> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from("./test-data/privacy-default"),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
@@ -166,8 +170,9 @@ async fn test_privacy_warnings() {
 #[tokio::test]
 async fn test_get_join_privacy_info() -> Result<()> {
     let keypair = Keypair::generate();
+    let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
-        storage_path: PathBuf::from("./test-data/privacy-join"),
+        storage_path: temp_dir.path().to_path_buf(),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };

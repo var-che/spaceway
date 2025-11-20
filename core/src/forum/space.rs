@@ -193,6 +193,7 @@ impl SpaceManager {
         
         let mls_group = MlsGroup::create(
             space_id,
+            creator,
             signer,
             mls_config,
             provider,
@@ -267,6 +268,7 @@ impl SpaceManager {
         
         let mls_group = MlsGroup::create(
             space_id,
+            creator,
             signer,
             mls_config,
             provider,

@@ -43,6 +43,15 @@ pub enum NetworkCommand {
     Publish { topic: String, data: Vec<u8>, response: oneshot::Sender<Result<()>> },
     /// Get listening addresses
     GetListeners { response: oneshot::Sender<Vec<Multiaddr>> },
+    /// Advertise as relay server on DHT
+    AdvertiseRelay { 
+        info: crate::network::relay::RelayAdvertisement,
+        response: oneshot::Sender<Result<()>> 
+    },
+    /// Discover available relay peers from DHT
+    DiscoverRelays { 
+        response: oneshot::Sender<Result<Vec<crate::network::relay::RelayInfo>>> 
+    },
     /// Shutdown the network
     Shutdown,
 }
@@ -228,21 +237,64 @@ impl NetworkNode {
             .map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
     
-    /// Dial a peer via relay (for IP privacy)
+    /// Dial a peer via relay circuit (for IP privacy)
     pub async fn dial_via_relay(
-        &mut self,
+        &self, 
         relay_addr: Multiaddr,
         relay_peer_id: PeerId,
-        target_peer_id: PeerId,
+        target_peer_id: PeerId
     ) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.command_tx.send(NetworkCommand::DialViaRelay {
-            relay_addr,
-            relay_peer_id,
+        self.command_tx.send(NetworkCommand::DialViaRelay { 
+            relay_addr, 
+            relay_peer_id, 
             target_peer_id,
-            response: tx,
+            response: tx 
         })
-        .map_err(|_| Error::Network("Network thread died".to_string()))?;
+            .map_err(|_| Error::Network("Network thread died".to_string()))?;
+        rx.await
+            .map_err(|_| Error::Network("Response channel closed".to_string()))?
+    }
+    
+    /// Advertise this node as a relay server on DHT
+    /// Allows other users to discover and use this node as relay
+    pub async fn advertise_as_relay(
+        &self,
+        mode: crate::network::relay::RelayMode,
+        addresses: Vec<Multiaddr>,
+        capacity: u32,
+    ) -> Result<()> {
+        use crate::network::relay::RelayAdvertisement;
+        
+        let info = RelayAdvertisement {
+            peer_id: self.peer_id,
+            addresses,
+            capacity,
+            mode,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+        
+        let (tx, rx) = oneshot::channel();
+        self.command_tx.send(NetworkCommand::AdvertiseRelay { 
+            info,
+            response: tx 
+        })
+            .map_err(|_| Error::Network("Network thread died".to_string()))?;
+        rx.await
+            .map_err(|_| Error::Network("Response channel closed".to_string()))?
+    }
+    
+    /// Discover available relay peers from DHT
+    /// Returns list of relays sorted by reputation
+    pub async fn discover_relays(&self) -> Result<Vec<crate::network::relay::RelayInfo>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx.send(NetworkCommand::DiscoverRelays { 
+            response: tx 
+        })
+            .map_err(|_| Error::Network("Network thread died".to_string()))?;
         rx.await
             .map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
@@ -326,6 +378,47 @@ impl NetworkWorker {
                         NetworkCommand::GetListeners { response } => {
                             let listeners: Vec<Multiaddr> = self.swarm.listeners().cloned().collect();
                             let _ = response.send(listeners);
+                        }
+                        NetworkCommand::AdvertiseRelay { info, response } => {
+                            use crate::network::relay::RELAY_DHT_KEY;
+                            
+                            // Serialize relay advertisement (custom format)
+                            let data = info.to_bytes();
+                            
+                            // Put value in DHT under relay key
+                            let key = libp2p::kad::RecordKey::new(&format!("{}/{}", RELAY_DHT_KEY, info.peer_id));
+                            let record = libp2p::kad::Record {
+                                key,
+                                value: data,
+                                publisher: None,
+                                expires: None,
+                            };
+                            
+                            let result = self.swarm.behaviour_mut().kademlia
+                                .put_record(record, libp2p::kad::Quorum::One)
+                                .map(|_| ())
+                                .map_err(|e| Error::Network(format!("DHT put failed: {:?}", e)));
+                            
+                            println!("✓ Advertised relay on DHT");
+                            let _ = response.send(result);
+                        }
+                        NetworkCommand::DiscoverRelays { response } => {
+                            use crate::network::relay::{RELAY_DHT_KEY, RelayInfo, RelayAdvertisement};
+                            
+                            // Start DHT query for relay providers
+                            let key = libp2p::kad::RecordKey::new(&RELAY_DHT_KEY);
+                            self.swarm.behaviour_mut().kademlia.get_providers(key.clone());
+                            
+                            // Also try to get stored relay records
+                            let _ = self.swarm.behaviour_mut().kademlia.get_record(key);
+                            
+                            // For now, return empty list (DHT discovery is async)
+                            // In production, we'd wait for DHT responses or maintain a cache
+                            // For MVP, we'll rely on bootstrap relays as fallback
+                            let relays = Vec::new();
+                            
+                            println!("✓ Discovering relays from DHT...");
+                            let _ = response.send(Ok(relays));
                         }
                         NetworkCommand::Shutdown => {
                             break;

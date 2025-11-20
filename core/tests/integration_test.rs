@@ -2,13 +2,18 @@
 //!
 //! Tests multi-client scenarios with actual networking and storage
 
+mod integration;
+
 use anyhow::Result;
-use descord_core::{Client, ClientConfig, crypto::Keypair};
+use descord_core::{Client, ClientConfig, crypto::Keypair, Permissions, Role};
+use descord_core::mls::{MlsGroup, MlsGroupConfig, provider::create_provider};
+use descord_core::types::{SpaceId, UserId};
 use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
+use uuid::Uuid;
 
 /// Helper to create a test client
-async fn create_test_client(name: &str) -> Result<Client> {
+async fn create_test_client(_name: &str) -> Result<Client> {
     let keypair = Keypair::generate();
     let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {
@@ -378,8 +383,10 @@ async fn test_crdt_commutativity() -> Result<()> {
     assert_eq!(set1, set2, "Should have same message IDs regardless of operation order");
     
     println!("✓ CRDT commutativity verified!");
-    
-
+    println!("✓ Both clients converged to the same state!");
 
     Ok(())
 }
+
+// Full permissions test moved to tests/integration/permissions_test.rs
+// Message deletion tests in tests/integration/message_deletion_test.rs

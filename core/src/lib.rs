@@ -11,10 +11,12 @@ pub mod crypto;
 pub mod forum;
 pub mod mls;
 pub mod network;
+pub mod permissions;
 pub mod storage;
 pub mod types;
 
 pub use client::{Client, ClientConfig};
+pub use permissions::{Permissions, PermissionResult};
 pub use types::*;
 
 /// Result type used throughout the library

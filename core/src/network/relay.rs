@@ -12,10 +12,10 @@
 
 use libp2p::{
     relay,
-    identity,
     Multiaddr,
     PeerId,
 };
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Relay configuration
@@ -42,15 +42,89 @@ impl Default for RelayConfig {
     }
 }
 
-/// Bootstrap relay addresses (hardcoded for now, can be configurable later)
-/// In production, these would be community-run or paid relay nodes
+/// Relay mode - how this node participates in relay network
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum RelayMode {
+    /// Only use relays, don't run one
+    ClientOnly,
+    
+    /// Run relay server AND use relays (Veilid-style cooperative)
+    Cooperative {
+        max_bandwidth_mb_hour: u64,
+        max_concurrent_circuits: usize,
+    },
+    
+    /// Dedicated relay server (VPS/always-on)
+    DedicatedServer,
+}
+
+impl Default for RelayMode {
+    fn default() -> Self {
+        RelayMode::ClientOnly
+    }
+}
+
+/// Information about an available relay peer
+#[derive(Clone, Debug)]
+pub struct RelayInfo {
+    /// Relay peer ID
+    pub peer_id: PeerId,
+    /// Multiaddresses where relay is reachable
+    pub addresses: Vec<Multiaddr>,
+    /// Relay capacity (max concurrent circuits)
+    pub capacity: u32,
+    /// Reputation score (0-100)
+    pub reputation: u32,
+    /// Estimated latency in milliseconds
+    pub latency_ms: Option<u32>,
+    /// When this relay was last seen (unix timestamp)
+    pub last_seen: u64,
+    /// Relay mode
+    pub mode: RelayMode,
+}
+
+/// Relay advertisement published to DHT
+#[derive(Clone, Debug)]
+pub struct RelayAdvertisement {
+    /// Relay peer ID (stored as string for serialization)
+    pub peer_id: PeerId,
+    /// Addresses where relay can be reached (stored as strings)
+    pub addresses: Vec<Multiaddr>,
+    /// Max concurrent circuits relay can handle
+    pub capacity: u32,
+    /// Relay mode
+    pub mode: RelayMode,
+    /// Timestamp of advertisement
+    pub timestamp: u64,
+}
+
+// Manual serialization helpers for types that don't impl Serialize
+impl RelayAdvertisement {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let data = format!(
+            "{{\"peer_id\":\"{}\",\"addresses\":[{}],\"capacity\":{},\"mode\":{},\"timestamp\":{}}}",
+            self.peer_id,
+            self.addresses.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(","),
+            self.capacity,
+            serde_json::to_string(&self.mode).unwrap(),
+            self.timestamp
+        );
+        data.into_bytes()
+    }
+}
+
+/// DHT key for relay advertisements
+pub const RELAY_DHT_KEY: &str = "/descord/relays";
+
+/// Bootstrap relay addresses (fallback when no user relays available)
 pub fn default_relay_addresses() -> Vec<Multiaddr> {
     vec![
-        // Localhost for testing
+        // Localhost for testing (two ports for redundancy in tests)
         "/ip4/127.0.0.1/tcp/4001".parse().unwrap(),
-        // TODO: Add production relay addresses
-        // "/ip4/relay1.descord.network/tcp/4001".parse().unwrap(),
-        // "/ip4/relay2.descord.network/tcp/4001".parse().unwrap(),
+        "/ip4/127.0.0.1/tcp/4002".parse().unwrap(),
+        // TODO: Add production relay addresses when deployed
+        // "/dns4/relay1.descord.network/tcp/4001/p2p/12D3Koo...".parse().unwrap(),
+        // "/dns4/relay2.descord.network/tcp/4001/p2p/12D3Koo...".parse().unwrap(),
     ]
 }
 

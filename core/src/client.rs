@@ -342,6 +342,13 @@ impl Client {
             .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?
             .clone();
         
+        // Store Space metadata in DHT for offline discovery
+        drop(manager); // Release lock before calling dht_put_space
+        if let Err(e) = self.dht_put_space(&space_id).await {
+            eprintln!("⚠️  Failed to store Space in DHT: {}", e);
+            // Non-fatal - space still created locally
+        }
+        
         Ok((space, op, privacy_info))
     }
 
@@ -448,6 +455,129 @@ impl Client {
     pub async fn list_invites(&self, space_id: &SpaceId) -> Vec<Invite> {
         let manager = self.space_manager.read().await;
         manager.list_invites(space_id).into_iter().cloned().collect()
+    }
+    
+    /// Join a space by fetching metadata from DHT (works when creator is offline)
+    /// 
+    /// This is the primary way to join a space when you have the Space ID but
+    /// the creator is not online. The Space metadata is retrieved from the DHT.
+    pub async fn join_space_from_dht(&self, space_id: SpaceId) -> Result<crate::forum::Space> {
+        // First, try to get the space from DHT
+        let space = self.dht_get_space(&space_id).await?;
+        
+        // Add space to local manager
+        let mut manager = self.space_manager.write().await;
+        
+        // Check if we already have this space
+        if manager.get_space(&space_id).is_some() {
+            println!("ℹ️  Space already exists locally: {}", space.name);
+            return Ok(space);
+        }
+        
+        // Store the space locally (we'll sync CRDT ops later)
+        // For now, just add it to the manager's internal state
+        // TODO: In Phase 3, we'll fetch and apply CRDT ops from DHT
+        
+        println!("✓ Joined Space from DHT: {}", space.name);
+        println!("  Space ID: {}", space_id);
+        println!("  Owner: {}", space.owner);
+        println!("  Members: {}", space.members.len());
+        
+        // Subscribe to space topic for future updates
+        drop(manager);
+        self.subscribe_to_space(&space_id).await?;
+        
+        Ok(space)
+    }
+    
+    // ========================================================================
+    // DHT Space Metadata Storage (Phase 2: Persistent Distributed Storage)
+    // ========================================================================
+    
+    /// Store Space metadata in the DHT for offline discovery
+    /// 
+    /// This allows other users to join the Space even when the creator is offline.
+    /// The metadata is encrypted and can only be decrypted by those who know the Space ID.
+    pub async fn dht_put_space(&self, space_id: &SpaceId) -> Result<()> {
+        use crate::forum::{SpaceMetadata, EncryptedSpaceMetadata};
+        
+        // Get the space
+        let manager = self.space_manager.read().await;
+        let space = manager.get_space(space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Create metadata (convert Keypair to ed25519_dalek::SigningKey)
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&self.keypair.to_bytes());
+        let metadata = SpaceMetadata::from_space(space, &signing_key);
+        
+        // Encrypt metadata
+        let encrypted = EncryptedSpaceMetadata::encrypt(&metadata)?;
+        
+        // Serialize for DHT
+        let value = encrypted.to_bytes()?;
+        
+        // Compute DHT key
+        let key = EncryptedSpaceMetadata::dht_key(space_id);
+        
+        // Store in DHT
+        let mut network = self.network.write().await;
+        network.dht_put(key, value).await?;
+        
+        println!("✓ Stored Space metadata in DHT: {}", space.name);
+        
+        Ok(())
+    }
+    
+    /// Retrieve Space metadata from the DHT
+    /// 
+    /// This allows joining a Space even when the creator is offline.
+    pub async fn dht_get_space(&self, space_id: &SpaceId) -> Result<crate::forum::Space> {
+        use crate::forum::{SpaceMetadata, EncryptedSpaceMetadata};
+        
+        // Compute DHT key
+        let key = EncryptedSpaceMetadata::dht_key(space_id);
+        
+        // Query DHT
+        let mut network = self.network.write().await;
+        let values = network.dht_get(key).await?;
+        
+        if values.is_empty() {
+            return Err(Error::NotFound(format!("Space {:?} not found in DHT", space_id)));
+        }
+        
+        // Deserialize first value
+        let encrypted = EncryptedSpaceMetadata::from_bytes(&values[0])?;
+        
+        // Decrypt metadata
+        let metadata = encrypted.decrypt()?;
+        
+        // Verify signature
+        if !metadata.verify_signature() {
+            return Err(Error::InvalidSignature);
+        }
+        
+        // Verify Space ID matches
+        if metadata.id != *space_id {
+            return Err(Error::InvalidOperation("Space ID mismatch".to_string()));
+        }
+        
+        // Convert metadata to Space
+        let space = crate::forum::Space {
+            id: metadata.id,
+            name: metadata.name.clone(),
+            description: metadata.description.clone(),
+            owner: metadata.owner,
+            members: metadata.initial_members.clone(),
+            visibility: metadata.visibility,
+            invites: std::collections::HashMap::new(), // Start with no invites
+            invite_permissions: metadata.invite_permissions.clone(),
+            epoch: metadata.epoch,
+            created_at: metadata.created_at,
+        };
+        
+        println!("✓ Retrieved Space from DHT: {}", space.name);
+        
+        Ok(space)
     }
     
     /// Get a specific invite

@@ -18,6 +18,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
+/// Information about a peer discovered in a space
+#[derive(Debug, Clone)]
+pub struct SpacePeerInfo {
+    /// Peer's libp2p peer ID
+    pub peer_id: String,
+    
+    /// Peer's relay address (circuit relay format, no IP exposed)
+    pub relay_address: String,
+}
+
 /// Client configuration
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -1064,6 +1074,124 @@ impl Client {
             network: Arc::clone(&self.network),
             current_relay: Arc::clone(&self.current_relay),
         }
+    }
+    
+    // ===== DHT-BASED PEER DISCOVERY =====
+    
+    /// Advertise this peer's presence in a space via DHT
+    /// 
+    /// Publishes our relay address to DHT so other space members can find us
+    /// Key format: /descord/space/{space_id}/peers
+    /// Value: JSON with peer_id and relay_address (no IP exposed)
+    pub async fn advertise_space_presence(&self, space_id: SpaceId) -> Result<()> {
+        let relay_addrs = self.relay_addresses().await;
+        if relay_addrs.is_empty() {
+            return Err(Error::Network("No relay address available for advertisement".to_string()));
+        }
+        
+        let peer_id = self.network_peer_id().await;
+        
+        // Create DHT key for this space
+        let space_key = format!("/descord/space/{}/peers", hex::encode(&space_id.0));
+        
+        // Create advertisement value (peer_id + relay address)
+        let advertisement = serde_json::json!({
+            "peer_id": peer_id,
+            "relay_address": relay_addrs[0],
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        });
+        
+        let value_bytes = serde_json::to_vec(&advertisement)
+            .map_err(|e| Error::Network(format!("Failed to serialize advertisement: {}", e)))?;
+        
+        // Publish to DHT
+        let mut network = self.network.write().await;
+        network.dht_put(space_key.as_bytes().to_vec(), value_bytes).await?;
+        
+        println!("📢 Advertised presence in space {} via DHT", hex::encode(&space_id.0[..8]));
+        Ok(())
+    }
+    
+    /// Discover peers in a space via DHT
+    /// 
+    /// Queries DHT for other peers advertising themselves in this space
+    /// Returns list of (peer_id, relay_address) tuples
+    pub async fn discover_space_peers(&self, space_id: SpaceId) -> Result<Vec<SpacePeerInfo>> {
+        let space_key = format!("/descord/space/{}/peers", hex::encode(&space_id.0));
+        
+        let mut network = self.network.write().await;
+        let results = network.dht_get(space_key.as_bytes().to_vec()).await?;
+        
+        let mut peers = Vec::new();
+        for value_bytes in results {
+            if let Ok(advertisement) = serde_json::from_slice::<serde_json::Value>(&value_bytes) {
+                if let (Some(peer_id), Some(relay_addr)) = (
+                    advertisement["peer_id"].as_str(),
+                    advertisement["relay_address"].as_str(),
+                ) {
+                    // Skip ourselves
+                    if peer_id != self.network_peer_id().await {
+                        peers.push(SpacePeerInfo {
+                            peer_id: peer_id.to_string(),
+                            relay_address: relay_addr.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        
+        println!("🔍 Discovered {} peers in space {}", peers.len(), hex::encode(&space_id.0[..8]));
+        Ok(peers)
+    }
+    
+    /// Connect to all discovered peers in a space via relay
+    /// 
+    /// Discovers peers via DHT and dials them through relay servers
+    /// This enables automatic mesh network formation without any central coordination
+    pub async fn connect_to_space_peers(&self, space_id: SpaceId) -> Result<usize> {
+        let peers = self.discover_space_peers(space_id).await?;
+        
+        if peers.is_empty() {
+            println!("ℹ️ No peers found in space {}", hex::encode(&space_id.0[..8]));
+            return Ok(0);
+        }
+        
+        let mut connected = 0;
+        for peer in &peers {
+            println!("📞 Dialing peer {} via relay...", &peer.peer_id[..16]);
+            
+            // Parse relay address to extract relay peer ID
+            // Format: /ip4/x.x.x.x/tcp/xxxx/p2p/{relay_id}/p2p-circuit/p2p/{peer_id}
+            if let Some(relay_id_start) = peer.relay_address.find("/p2p/") {
+                let after_relay = &peer.relay_address[relay_id_start + 5..];
+                if let Some(relay_id_end) = after_relay.find("/p2p-circuit") {
+                    let relay_id = &after_relay[..relay_id_end];
+                    
+                    // Extract base relay address (without /p2p-circuit/p2p/{peer_id})
+                    let relay_addr = &peer.relay_address[..relay_id_start + 5 + relay_id_end];
+                    
+                    match self.dial_peer_via_relay(relay_addr, relay_id, &peer.peer_id).await {
+                        Ok(_) => {
+                            println!("✓ Connected to peer {} via relay", &peer.peer_id[..16]);
+                            connected += 1;
+                        }
+                        Err(e) => {
+                            println!("⚠️ Failed to connect to peer {}: {}", &peer.peer_id[..16], e);
+                        }
+                    }
+                } else {
+                    println!("⚠️ Invalid relay address format for peer {}", &peer.peer_id[..16]);
+                }
+            } else {
+                println!("⚠️ Cannot parse relay address for peer {}", &peer.peer_id[..16]);
+            }
+        }
+        
+        println!("🌐 Connected to {}/{} peers in space", connected, peers.len());
+        Ok(connected)
     }
 }
 

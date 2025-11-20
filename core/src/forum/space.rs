@@ -507,6 +507,21 @@ impl SpaceManager {
         self.spaces.get(space_id)
     }
     
+    /// Add a Space from DHT metadata (without MLS group)
+    /// 
+    /// This is used when joining a Space while the creator is offline.
+    /// The Space metadata is fetched from DHT, but we don't have MLS keys yet.
+    /// The user won't be able to decrypt messages until an admin adds them to the MLS group.
+    pub fn add_space_from_dht(&mut self, space: Space) {
+        let space_id = space.id;
+        
+        // Only add if it doesn't exist
+        if !self.spaces.contains_key(&space_id) {
+            self.spaces.insert(space_id, space);
+            // Note: No MLS group yet - will be initialized when we receive Welcome message
+        }
+    }
+    
     /// Get all Spaces
     pub fn list_spaces(&self) -> Vec<&Space> {
         self.spaces.values().collect()

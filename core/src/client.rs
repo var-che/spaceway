@@ -429,11 +429,41 @@ impl Client {
     }
     
     /// Join a space using an invite code
+    /// 
+    /// Automatically fetches Space metadata from DHT if creator is offline.
     pub async fn join_with_invite(
         &self,
         space_id: SpaceId,
         code: String,
     ) -> Result<CrdtOp> {
+        // First check if we have the Space locally
+        let has_space = {
+            let manager = self.space_manager.read().await;
+            manager.get_space(&space_id).is_some()
+        };
+        
+        // If Space doesn't exist locally, try fetching from DHT
+        if !has_space {
+            println!("⚠️  Space not found locally, fetching from DHT...");
+            match self.dht_get_space(&space_id).await {
+                Ok(space) => {
+                    println!("✓ Retrieved Space '{}' from DHT", space.name);
+                    println!("  Note: You won't be able to decrypt messages until an admin adds you to the MLS group");
+                    
+                    // Store space metadata locally (but we don't have MLS keys yet)
+                    let mut manager = self.space_manager.write().await;
+                    manager.add_space_from_dht(space);
+                }
+                Err(e) => {
+                    println!("✗ Failed to fetch Space from DHT: {}", e);
+                    println!("  The Space creator may need to be online for you to join");
+                    return Err(Error::NotFound(format!(
+                        "Space not found locally or in DHT. Creator may be offline."
+                    )));
+                }
+            }
+        }
+        
         let mut manager = self.space_manager.write().await;
         let op = manager.use_invite(
             space_id,
@@ -447,6 +477,10 @@ impl Client {
         
         // Broadcast operation
         self.broadcast_op(&op).await?;
+        
+        // Subscribe to space topic for future updates
+        drop(manager);
+        self.subscribe_to_space(&space_id).await?;
         
         Ok(op)
     }

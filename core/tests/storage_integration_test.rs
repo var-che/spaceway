@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 /// Helper to create a test client with storage
-async fn create_client_with_storage(name: &str) -> Result<(Client, TempDir)> {
+async fn create_client_with_storage(_name: &str) -> Result<(Client, TempDir)> {
     let keypair = Keypair::generate();
     let temp_dir = tempfile::tempdir()?;
     let config = ClientConfig {
@@ -175,7 +175,7 @@ async fn test_storage_restart_persistence() -> Result<()> {
     
     println!("\n📝 Phase 2: Restart client");
     {
-        let client = create_client_at_path(&storage_path, keypair).await?;
+        let _client = create_client_at_path(&storage_path, keypair).await?;
         
         // Note: Spaces/channels are in-memory only, not persisted yet
         // This test verifies that the storage layer itself persists data

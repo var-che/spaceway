@@ -8,6 +8,7 @@ use crate::crypto::signing::Keypair;
 use crate::forum::{Space, SpaceManager, Channel, ChannelManager, Thread, ThreadManager, Message};
 use crate::mls::provider::{create_provider, DescordProvider};
 use crate::network::{NetworkNode, NetworkEvent};
+use anyhow::Context;
 use crate::storage::Store;
 use crate::types::*;
 use crate::{Error, Result};
@@ -453,6 +454,25 @@ impl Client {
                     // Store space metadata locally (but we don't have MLS keys yet)
                     let mut manager = self.space_manager.write().await;
                     manager.add_space_from_dht(space);
+                    drop(manager); // Release lock for async operation
+                    
+                    // Fetch CRDT operations from DHT to rebuild state
+                    match self.dht_get_operations(&space_id).await {
+                        Ok(ops) => {
+                            if !ops.is_empty() {
+                                println!("✓ Fetched {} operations from DHT", ops.len());
+                                for op in ops {
+                                    if let Err(e) = self.handle_incoming_op(op).await {
+                                        eprintln!("⚠ Failed to apply operation: {}", e);
+                                    }
+                                }
+                                println!("✓ Applied operations to rebuild Space state");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("⚠ Failed to fetch operations from DHT: {}", e);
+                        }
+                    }
                 }
                 Err(e) => {
                     println!("✗ Failed to fetch Space from DHT: {}", e);
@@ -1126,6 +1146,8 @@ impl Client {
     /// 
     /// Encrypts the data using a key derived from the user's keypair and returns
     /// the content-addressed hash along with metadata.
+    /// 
+    /// Optionally uploads to DHT for offline availability if space_id is provided.
     pub async fn store_blob(
         &self,
         data: &[u8],
@@ -1169,6 +1191,49 @@ impl Client {
         Ok(metadata)
     }
     
+    /// Store a blob with DHT replication for a specific Space
+    /// 
+    /// This is used for Space-related content (messages, attachments) that should
+    /// be available even when the uploader is offline.
+    pub async fn store_blob_for_space(
+        &self,
+        space_id: &SpaceId,
+        data: &[u8],
+        mime_type: Option<String>,
+        filename: Option<String>,
+    ) -> Result<crate::storage::indices::BlobMetadata> {
+        // Store locally first
+        let metadata = self.store_blob(data, mime_type, filename).await?;
+        
+        // Derive encryption key for local blob
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(b"descord-user-blob-key-v1");
+        hasher.update(&self.user_id.0);
+        let key_bytes: [u8; 32] = hasher.finalize().into();
+        
+        // Load the locally-encrypted blob
+        let blob_path = self.storage.blob_dir().join(metadata.hash.to_hex());
+        let blob_bytes = std::fs::read(&blob_path)
+            .context("Failed to read blob for DHT upload")?;
+        let local_blob = crate::storage::blob::EncryptedBlob::from_bytes(&blob_bytes)?;
+        
+        // Upload to DHT (non-blocking, best effort)
+        let result = self.dht_put_blob(space_id, &metadata.hash, &local_blob).await;
+        if let Err(e) = result {
+            // Don't fail if DHT upload fails (degraded mode)
+            eprintln!("⚠ Failed to upload blob to DHT: {}", e);
+        } else {
+            tracing::info!(
+                hash = %metadata.hash.to_hex(),
+                space_id = %hex::encode(&space_id.0[..8]),
+                "Uploaded blob to DHT"
+            );
+        }
+        
+        Ok(metadata)
+    }
+    
     /// Retrieve a blob by hash
     /// 
     /// Decrypts and returns the blob data. Verifies content integrity.
@@ -1180,16 +1245,84 @@ impl Client {
         hasher.update(&self.user_id.0);
         let key_bytes: [u8; 32] = hasher.finalize().into();
         
-        // Load and decrypt blob
-        let plaintext = self.storage.load_blob(hash, &key_bytes)?;
+        // Try local storage first
+        match self.storage.load_blob(hash, &key_bytes) {
+            Ok(plaintext) => {
+                tracing::debug!(
+                    hash = %hash.to_hex(),
+                    size = plaintext.len(),
+                    "Retrieved blob from local storage"
+                );
+                Ok(plaintext.to_vec())
+            }
+            Err(_) => {
+                // Not found locally - this is expected for user blobs only
+                // For Space blobs, use retrieve_blob_for_space instead
+                Err(Error::NotFound(format!("Blob {} not found", hash.to_hex())))
+            }
+        }
+    }
+    
+    /// Retrieve a blob by hash with DHT fallback for a specific Space
+    /// 
+    /// Tries local storage first, then falls back to DHT if the blob is not available.
+    pub async fn retrieve_blob_for_space(
+        &self,
+        space_id: &SpaceId,
+        hash: &crate::storage::BlobHash,
+    ) -> Result<Vec<u8>> {
+        // Derive encryption key
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(b"descord-user-blob-key-v1");
+        hasher.update(&self.user_id.0);
+        let key_bytes: [u8; 32] = hasher.finalize().into();
         
-        tracing::debug!(
-            hash = %hash.to_hex(),
-            size = plaintext.len(),
-            "Retrieved blob"
-        );
-        
-        Ok(plaintext.to_vec())
+        // Try local storage first
+        match self.storage.load_blob(hash, &key_bytes) {
+            Ok(plaintext) => {
+                tracing::debug!(
+                    hash = %hash.to_hex(),
+                    "Retrieved blob from local storage"
+                );
+                Ok(plaintext.to_vec())
+            }
+            Err(_) => {
+                // Not found locally - try DHT
+                tracing::info!(
+                    hash = %hash.to_hex(),
+                    space_id = %hex::encode(&space_id.0[..8]),
+                    "Blob not found locally, fetching from DHT"
+                );
+                
+                match self.dht_get_blob(space_id, hash).await {
+                    Ok(local_blob) => {
+                        // Got it from DHT! Decrypt and store locally
+                        let plaintext = local_blob.decrypt(&key_bytes)?;
+                        
+                        // Store locally for future access
+                        let blob_bytes = local_blob.to_bytes()?;
+                        let blob_path = self.storage.blob_dir().join(hash.to_hex());
+                        std::fs::write(&blob_path, &blob_bytes)
+                            .context("Failed to cache blob from DHT")?;
+                        
+                        tracing::info!(
+                            hash = %hash.to_hex(),
+                            "Retrieved blob from DHT and cached locally"
+                        );
+                        
+                        Ok(plaintext.to_vec())
+                    }
+                    Err(e) => {
+                        Err(Error::NotFound(format!(
+                            "Blob {} not found locally or in DHT: {}",
+                            hash.to_hex(),
+                            e
+                        )))
+                    }
+                }
+            }
+        }
     }
     
     /// Broadcast a CRDT operation to the network

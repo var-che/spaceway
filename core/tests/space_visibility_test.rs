@@ -1,10 +1,9 @@
 use descord_core::{Client, ClientConfig, crypto::Keypair};
 use descord_core::types::SpaceVisibility;
 use anyhow::Result;
-use std::path::PathBuf;
 
 /// Helper to create a test client
-fn create_test_client(name: &str) -> Result<Client> {
+fn create_test_client(_name: &str) -> Result<Client> {
     let keypair = Keypair::generate();
     let temp_dir = tempfile::tempdir().unwrap();
     let config = ClientConfig {

@@ -198,19 +198,19 @@ async fn test_three_person_interaction() -> Result<()> {
     println!("✅ Message content verified");
 
     // Test concurrent messaging - all three send at once
-    let (alice_msg2, alice_msg2_op) = alice.post_message(
+    let (_alice_msg2, alice_msg2_op) = alice.post_message(
         alice_space.id,
         alice_thread.id,
         "Alice says hello again!".to_string()
     ).await?;
 
-    let (bob_msg2, bob_msg2_op) = bob.post_message(
+    let (_bob_msg2, bob_msg2_op) = bob.post_message(
         alice_space.id,
         alice_thread.id,
         "Bob says hello again!".to_string()
     ).await?;
 
-    let (charlie_msg2, charlie_msg2_op) = charlie.post_message(
+    let (_charlie_msg2, charlie_msg2_op) = charlie.post_message(
         alice_space.id,
         alice_thread.id,
         "Charlie says hello again!".to_string()

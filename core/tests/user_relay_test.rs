@@ -72,7 +72,7 @@ async fn test_client_discovers_user_relay() -> Result<()> {
         bootstrap_peers: vec![],
     };
     
-    let client = Client::new(keypair, config)?;
+    let _client = Client::new(keypair, config)?;
     
     // In real implementation, client would discover relay via DHT/mDNS
     // For now, we verify the relay is reachable
@@ -91,10 +91,10 @@ async fn test_relay_hides_ip_addresses() -> Result<()> {
     
     // 1. Start relay server (volunteer user)
     let mut relay_swarm = create_relay_server()?;
-    let relay_peer_id = *relay_swarm.local_peer_id();
+    let _relay_peer_id = *relay_swarm.local_peer_id();
     relay_swarm.listen_on("/ip4/127.0.0.1/tcp/14002".parse()?)?;
     
-    let relay_addr = loop {
+    let _relay_addr = loop {
         match relay_swarm.select_next_some().await {
             SwarmEvent::NewListenAddr { address, .. } => break address,
             _ => continue,
@@ -128,10 +128,10 @@ async fn test_relay_hides_ip_addresses() -> Result<()> {
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
         bootstrap_peers: vec![],
     };
-    let bob = Client::new(bob_keypair, bob_config)?;
+    let _bob = Client::new(bob_keypair, bob_config)?;
     
     // 4. Alice creates Private space (requires relay)
-    let (space, _, privacy_info) = alice.create_space_with_visibility(
+    let (_space, _, privacy_info) = alice.create_space_with_visibility(
         "Secret Chat".to_string(),
         None,
         SpaceVisibility::Private

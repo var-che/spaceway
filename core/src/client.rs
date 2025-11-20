@@ -15,6 +15,8 @@ use crate::{Error, Result};
 use std::path::PathBuf;
 use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 
 /// Client configuration
 #[derive(Debug, Clone)]
@@ -70,6 +72,12 @@ pub struct Client {
     
     /// MLS provider
     mls_provider: DescordProvider,
+    
+    /// Current relay information
+    current_relay: Arc<RwLock<Option<crate::network::relay::RelayInfo>>>,
+    
+    /// Relay rotation task handle
+    rotation_task: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl Client {
@@ -107,6 +115,8 @@ impl Client {
             network_rx,
             store,
             mls_provider,
+            current_relay: Arc::new(RwLock::new(None)),
+            rotation_task: Arc::new(RwLock::new(None)),
         })
     }
     
@@ -869,6 +879,209 @@ impl Client {
     pub async fn network_dial(&self, addr: &str) -> Result<()> {
         let multiaddr = addr.parse()
             .map_err(|e| Error::Network(format!("Invalid address {}: {}", addr, e)))?;
+        let mut network = self.network.write().await;
+        network.dial(multiaddr).await
+    }
+    
+    /// Discover available relay servers from DHT
+    pub async fn discover_relays(&self) -> Result<Vec<crate::network::relay::RelayInfo>> {
+        let mut network = self.network.write().await;
+        network.discover_relays().await
+    }
+    
+    /// Connect to a relay server and reserve a relay slot
+    pub async fn connect_to_relay(&self, relay_addr: &str) -> Result<()> {
+        let multiaddr = relay_addr.parse()
+            .map_err(|e| Error::Network(format!("Invalid relay address {}: {}", relay_addr, e)))?;
+        let mut network = self.network.write().await;
+        network.dial(multiaddr).await
+    }
+    
+    /// Dial a peer through a relay (for IP privacy)
+    /// 
+    /// This establishes a connection via circuit relay, hiding both peers' IP addresses
+    pub async fn dial_peer_via_relay(
+        &self,
+        relay_addr: &str,
+        relay_peer_id: &str,
+        target_peer_id: &str,
+    ) -> Result<()> {
+        let relay_multiaddr = relay_addr.parse()
+            .map_err(|e| Error::Network(format!("Invalid relay address: {}", e)))?;
+        
+        let relay_id = relay_peer_id.parse()
+            .map_err(|e| Error::Network(format!("Invalid relay peer ID: {}", e)))?;
+        
+        let target_id = target_peer_id.parse()
+            .map_err(|e| Error::Network(format!("Invalid target peer ID: {}", e)))?;
+        
+        let mut network = self.network.write().await;
+        network.dial_via_relay(relay_multiaddr, relay_id, target_id).await
+    }
+    
+    /// Get relay-only addresses (circuit relay addresses, no direct IP)
+    /// 
+    /// Returns only /p2p-circuit addresses for privacy
+    pub async fn relay_addresses(&self) -> Vec<String> {
+        let network = self.network.read().await;
+        let peer_id = network.local_peer_id();
+        
+        // Return p2p-circuit address format
+        // Format: /p2p/{relay_peer_id}/p2p-circuit/p2p/{our_peer_id}
+        vec![format!("/p2p-circuit/p2p/{}", peer_id)]
+    }
+    
+    /// Auto-discover and connect to best available relay
+    /// 
+    /// Discovers relays from DHT and connects to the one with best reputation
+    pub async fn auto_connect_relay(&self) -> Result<crate::network::relay::RelayInfo> {
+        // Discover relays from DHT
+        let relays = self.discover_relays().await?;
+        
+        if relays.is_empty() {
+            return Err(Error::Network("No relays discovered".to_string()));
+        }
+        
+        // Sort by reputation (highest first)
+        let mut sorted_relays = relays;
+        sorted_relays.sort_by(|a, b| {
+            b.reputation.partial_cmp(&a.reputation).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        // Connect to best relay
+        let best_relay = &sorted_relays[0];
+        
+        // Pick first available address
+        if let Some(addr) = best_relay.addresses.first() {
+            let addr_str = addr.to_string();
+            self.connect_to_relay(&addr_str).await?;
+            println!("✓ Connected to relay: {} (reputation: {:.2})", 
+                best_relay.peer_id, best_relay.reputation);
+            
+            // Store current relay
+            *self.current_relay.write().await = Some(best_relay.clone());
+            
+            Ok(best_relay.clone())
+        } else {
+            Err(Error::Network("Best relay has no addresses".to_string()))
+        }
+    }
+    
+    /// Start automatic relay rotation
+    /// 
+    /// Periodically switches to a new relay for privacy
+    /// - rotation_interval: How often to rotate relays (e.g., Duration::from_secs(300) for 5 minutes)
+    pub async fn start_relay_rotation(&self, rotation_interval: Duration) -> Result<()> {
+        // Stop any existing rotation task
+        self.stop_relay_rotation().await;
+        
+        let client_clone = Arc::new(self.clone_for_rotation());
+        let rotation_interval_clone = rotation_interval;
+        
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(rotation_interval_clone);
+            interval.tick().await; // Skip first immediate tick
+            
+            loop {
+                interval.tick().await;
+                
+                println!("🔄 Relay rotation triggered");
+                
+                // Discover available relays
+                match client_clone.discover_relays().await {
+                    Ok(relays) if !relays.is_empty() => {
+                        // Filter out current relay
+                        let current_peer_id = {
+                            let current = client_clone.current_relay.read().await;
+                            current.as_ref().map(|r| r.peer_id.to_string())
+                        };
+                        
+                        let mut available_relays: Vec<_> = relays.into_iter()
+                            .filter(|r| Some(r.peer_id.to_string()) != current_peer_id)
+                            .collect();
+                        
+                        if available_relays.is_empty() {
+                            println!("⚠️ No alternative relays available for rotation");
+                            continue;
+                        }
+                        
+                        // Sort by reputation
+                        available_relays.sort_by(|a, b| {
+                            b.reputation.partial_cmp(&a.reputation).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        
+                        // Connect to new best relay
+                        let new_relay = &available_relays[0];
+                        if let Some(addr) = new_relay.addresses.first() {
+                            let addr_str = addr.to_string();
+                            match client_clone.connect_to_relay(&addr_str).await {
+                                Ok(_) => {
+                                    println!("✓ Rotated to relay: {} (reputation: {:.2})", 
+                                        new_relay.peer_id, new_relay.reputation);
+                                    
+                                    // Update current relay
+                                    *client_clone.current_relay.write().await = Some(new_relay.clone());
+                                }
+                                Err(e) => {
+                                    println!("❌ Relay rotation failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        println!("⚠️ No relays discovered during rotation");
+                    }
+                    Err(e) => {
+                        println!("❌ Relay discovery failed during rotation: {}", e);
+                    }
+                }
+            }
+        });
+        
+        *self.rotation_task.write().await = Some(task);
+        println!("🔄 Relay rotation started (interval: {:?})", rotation_interval);
+        
+        Ok(())
+    }
+    
+    /// Stop automatic relay rotation
+    pub async fn stop_relay_rotation(&self) {
+        let mut task = self.rotation_task.write().await;
+        if let Some(handle) = task.take() {
+            handle.abort();
+            println!("🛑 Relay rotation stopped");
+        }
+    }
+    
+    /// Get current relay information
+    pub async fn current_relay(&self) -> Option<crate::network::relay::RelayInfo> {
+        self.current_relay.read().await.clone()
+    }
+    
+    /// Helper to clone necessary fields for rotation task
+    fn clone_for_rotation(&self) -> ClientForRotation {
+        ClientForRotation {
+            network: Arc::clone(&self.network),
+            current_relay: Arc::clone(&self.current_relay),
+        }
+    }
+}
+
+/// Minimal client clone for rotation background task
+struct ClientForRotation {
+    network: Arc<RwLock<NetworkNode>>,
+    current_relay: Arc<RwLock<Option<crate::network::relay::RelayInfo>>>,
+}
+
+impl ClientForRotation {
+    async fn discover_relays(&self) -> Result<Vec<crate::network::relay::RelayInfo>> {
+        let mut network = self.network.write().await;
+        network.discover_relays().await
+    }
+    
+    async fn connect_to_relay(&self, relay_addr: &str) -> Result<()> {
+        let multiaddr = relay_addr.parse()
+            .map_err(|e| Error::Network(format!("Invalid relay address {}: {}", relay_addr, e)))?;
         let mut network = self.network.write().await;
         network.dial(multiaddr).await
     }

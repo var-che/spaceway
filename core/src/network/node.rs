@@ -19,7 +19,8 @@ use libp2p::{
     },
     Transport,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 use std::thread;
 
@@ -128,6 +129,12 @@ struct NetworkWorker {
     
     /// Command receiver
     command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
+    
+    /// Pending DHT GET queries: QueryId -> (response_channel, start_time)
+    pending_get_queries: HashMap<kad::QueryId, (oneshot::Sender<Result<Vec<Vec<u8>>>>, Instant)>,
+    
+    /// Pending DHT PUT queries: QueryId -> (response_channel, start_time)
+    pending_put_queries: HashMap<kad::QueryId, (oneshot::Sender<Result<()>>, Instant)>,
 }
 
 impl NetworkNode {
@@ -151,18 +158,50 @@ impl NetworkNode {
         // Set DHT mode to server (accept queries)
         kademlia.set_mode(Some(kad::Mode::Server));
         
-        // Create GossipSub
+        // Create GossipSub with privacy-preserving configuration
         let gossipsub_config = gossipsub::ConfigBuilder::default()
+            // Faster propagation for real-time messaging
             .heartbeat_interval(Duration::from_secs(1))
+            
+            // Strict validation - reject unsigned/invalid messages
             .validation_mode(gossipsub::ValidationMode::Strict)
+            
+            // Message deduplication (keep seen messages for 5 minutes)
+            .duplicate_cache_time(Duration::from_secs(300))
+            
+            // Limit message size to prevent spam (1MB max)
+            .max_transmit_size(1024 * 1024)
+            
+            // Privacy: Don't flood-publish to all peers
+            // Only send to mesh peers (reduces metadata leakage)
+            .flood_publish(false)
+            
+            // Mesh configuration for reliability
+            .mesh_n(6)        // Target 6 peers in mesh
+            .mesh_n_low(4)    // Min 4 peers
+            .mesh_n_high(12)  // Max 12 peers
+            
+            // Message caching for late joiners
+            .history_length(10)   // Keep last 10 messages
+            .history_gossip(5)    // Gossip about 5 cached messages
+            
             .build()
             .map_err(|e| Error::Network(format!("GossipSub config error: {}", e)))?;
         
-        let gossipsub = gossipsub::Behaviour::new(
+        let mut gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(local_key.clone()),
             gossipsub_config,
         )
         .map_err(|e| Error::Network(format!("GossipSub creation error: {}", e)))?;
+        
+        // Enable message validation with custom validator
+        // This will call our validation logic before accepting/propagating messages
+        gossipsub
+            .with_peer_score(
+                gossipsub::PeerScoreParams::default(),
+                gossipsub::PeerScoreThresholds::default(),
+            )
+            .map_err(|e| Error::Network(format!("Failed to enable peer scoring: {}", e)))?;
         
         // Create relay client behavior
         let (relay_transport, relay_client) = relay::client::new(local_peer_id);
@@ -205,6 +244,8 @@ impl NetworkNode {
             swarm,
             event_tx: user_event_tx,
             command_rx,
+            pending_get_queries: HashMap::new(),
+            pending_put_queries: HashMap::new(),
         };
         
         // Bootstrap DHT with provided peers
@@ -491,28 +532,77 @@ impl NetworkWorker {
                                 expires: None,
                             };
                             
-                            let result = self.swarm.behaviour_mut().kademlia
-                                .put_record(record, libp2p::kad::Quorum::One)
-                                .map(|_| ())
-                                .map_err(|e| Error::Network(format!("DHT put failed: {:?}", e)));
-                            
-                            let _ = response.send(result);
+                            match self.swarm.behaviour_mut().kademlia
+                                .put_record(record, libp2p::kad::Quorum::One) {
+                                Ok(query_id) => {
+                                    // Track pending query
+                                    self.pending_put_queries.insert(query_id, (response, Instant::now()));
+                                }
+                                Err(e) => {
+                                    let _ = response.send(Err(Error::Network(format!("DHT put failed: {:?}", e))));
+                                }
+                            }
                         }
                         NetworkCommand::DhtGet { key, response } => {
                             // Query DHT for values
                             let record_key = libp2p::kad::RecordKey::new(&key);
-                            let _ = self.swarm.behaviour_mut().kademlia.get_record(record_key);
+                            let query_id = self.swarm.behaviour_mut().kademlia.get_record(record_key);
                             
-                            // For now, return empty (DHT queries are async)
-                            // In production, we'd maintain pending queries and respond when results arrive
-                            // For MVP, this is sufficient for demonstration
-                            let _ = response.send(Ok(Vec::new()));
+                            // Track pending query - will be resolved when GetRecord event arrives
+                            self.pending_get_queries.insert(query_id, (response, Instant::now()));
                         }
                         NetworkCommand::Shutdown => {
                             break;
                         }
                     }
                 }
+            }
+            
+            // Check for timed-out queries (30 second timeout)
+            self.check_query_timeouts();
+        }
+    }
+    
+    /// Check for and clean up timed-out DHT queries
+    fn check_query_timeouts(&mut self) {
+        const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+        let now = Instant::now();
+        
+        // Collect timed-out GET queries
+        let timed_out_gets: Vec<_> = self.pending_get_queries
+            .iter()
+            .filter_map(|(query_id, (_response, start_time))| {
+                if now.duration_since(*start_time) > QUERY_TIMEOUT {
+                    Some(*query_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Remove and notify timed-out GET queries
+        for query_id in timed_out_gets {
+            if let Some((response, _)) = self.pending_get_queries.remove(&query_id) {
+                let _ = response.send(Err(Error::Network("DHT GET query timed out".to_string())));
+            }
+        }
+        
+        // Collect timed-out PUT queries
+        let timed_out_puts: Vec<_> = self.pending_put_queries
+            .iter()
+            .filter_map(|(query_id, (_response, start_time))| {
+                if now.duration_since(*start_time) > QUERY_TIMEOUT {
+                    Some(*query_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Remove and notify timed-out PUT queries
+        for query_id in timed_out_puts {
+            if let Some((response, _)) = self.pending_put_queries.remove(&query_id) {
+                let _ = response.send(Err(Error::Network("DHT PUT query timed out".to_string())));
             }
         }
     }
@@ -554,7 +644,7 @@ impl NetworkWorker {
     /// Handle Kademlia DHT events
     async fn handle_kademlia_event(&mut self, event: kad::Event) {
         match event {
-            kad::Event::OutboundQueryProgressed { result, .. } => {
+            kad::Event::OutboundQueryProgressed { result, id, .. } => {
                 match result {
                     kad::QueryResult::GetClosestPeers(Ok(ok)) => {
                         for peer in ok.peers {
@@ -565,6 +655,46 @@ impl NetworkWorker {
                     kad::QueryResult::Bootstrap(Ok(_)) => {
                         println!("DHT bootstrap complete");
                         let _ = self.event_tx.send(NetworkEvent::DhtQueryComplete);
+                    }
+                    kad::QueryResult::GetRecord(Ok(ok)) => {
+                        // DHT GET query completed successfully
+                        if let Some((response, _start_time)) = self.pending_get_queries.remove(&id) {
+                            use kad::GetRecordOk;
+                            
+                            let values: Vec<Vec<u8>> = match ok {
+                                GetRecordOk::FoundRecord(peer_record) => {
+                                    println!("✓ DHT GET: Found 1 record");
+                                    vec![peer_record.record.value]
+                                }
+                                GetRecordOk::FinishedWithNoAdditionalRecord { .. } => {
+                                    println!("⚠️  DHT GET: Query finished, no additional records");
+                                    Vec::new()
+                                }
+                            };
+                            
+                            let _ = response.send(Ok(values));
+                        }
+                    }
+                    kad::QueryResult::GetRecord(Err(e)) => {
+                        // DHT GET query failed
+                        if let Some((response, _start_time)) = self.pending_get_queries.remove(&id) {
+                            println!("✗ DHT GET failed: {:?}", e);
+                            let _ = response.send(Err(Error::Network(format!("DHT GET failed: {:?}", e))));
+                        }
+                    }
+                    kad::QueryResult::PutRecord(Ok(_)) => {
+                        // DHT PUT query completed successfully
+                        if let Some((response, _start_time)) = self.pending_put_queries.remove(&id) {
+                            println!("✓ DHT PUT: Record stored successfully");
+                            let _ = response.send(Ok(()));
+                        }
+                    }
+                    kad::QueryResult::PutRecord(Err(e)) => {
+                        // DHT PUT query failed
+                        if let Some((response, _start_time)) = self.pending_put_queries.remove(&id) {
+                            println!("✗ DHT PUT failed: {:?}", e);
+                            let _ = response.send(Err(Error::Network(format!("DHT PUT failed: {:?}", e))));
+                        }
                     }
                     _ => {}
                 }

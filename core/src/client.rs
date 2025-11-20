@@ -88,6 +88,9 @@ pub struct Client {
     
     /// Relay rotation task handle
     rotation_task: Arc<RwLock<Option<JoinHandle<()>>>>,
+    
+    /// GossipSub metrics
+    gossip_metrics: Arc<crate::network::GossipMetrics>,
 }
 
 impl Client {
@@ -114,6 +117,9 @@ impl Client {
         // Create MLS provider
         let mls_provider = create_provider();
         
+        // Create GossipSub metrics
+        let gossip_metrics = Arc::new(crate::network::GossipMetrics::new());
+        
         Ok(Self {
             keypair,
             user_id,
@@ -127,6 +133,7 @@ impl Client {
             mls_provider,
             current_relay: Arc::new(RwLock::new(None)),
             rotation_task: Arc::new(RwLock::new(None)),
+            gossip_metrics,
         })
     }
     
@@ -145,6 +152,7 @@ impl Client {
         let store = Arc::clone(&self.store);
         let network_rx = Arc::clone(&self.network_rx);
         let network = Arc::clone(&self.network);
+        let gossip_metrics = Arc::clone(&self.gossip_metrics);
         
         tokio::spawn(async move {
             loop {
@@ -155,60 +163,96 @@ impl Client {
                 
                 if let Some(event) = event_opt {
                     match event {
-                        NetworkEvent::MessageReceived { topic, data, source: _ } => {
-                            // Decode CRDT operation (works for both space topics and discovery)
-                            if let Ok(op) = minicbor::decode::<CrdtOp>(&data) {
-                                // If this is a CreateSpace on discovery topic, auto-subscribe to the space
-                                if topic == "descord/space-discovery" {
-                                    if let crate::crdt::OpType::CreateSpace(payload) = &op.op_type {
-                                        if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
-                                            println!("📢 Discovered space: {} (space_{})", name, ::hex::encode(&op.space_id.0[..4]));
-                                            
-                                            // Auto-subscribe to the space topic
-                                            let space_topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
-                                            let mut net = network.write().await;
-                                            if let Ok(_) = net.subscribe(&space_topic).await {
-                                                println!("  → Auto-subscribed to {}", space_topic);
+                        NetworkEvent::MessageReceived { topic, data, source } => {
+                            // Decode CRDT operation
+                            match minicbor::decode::<CrdtOp>(&data) {
+                                Ok(op) => {
+                                    // Verify signature before processing
+                                    if !op.verify_signature() {
+                                        eprintln!("⚠️ Rejected message with invalid signature from {:?}", source);
+                                        continue;
+                                    }
+                                    
+                                    // Check if we've already processed this operation (deduplication)
+                                    let is_duplicate = if let Ok(Some(_)) = store.get_op(&op.op_id) {
+                                        // Already seen this op, skip processing
+                                        gossip_metrics.record_receive(&topic, true).await;
+                                        true
+                                    } else {
+                                        gossip_metrics.record_receive(&topic, false).await;
+                                        false
+                                    };
+                                    
+                                    if is_duplicate {
+                                        continue;
+                                    }
+                                    
+                                    tracing::debug!(
+                                        op_id = ?op.op_id,
+                                        op_type = ?op.op_type,
+                                        topic = %topic,
+                                        source = ?source,
+                                        "Received and validated CRDT operation"
+                                    );
+                                    
+                                    // If this is a CreateSpace on discovery topic, auto-subscribe to the space
+                                    if topic == "descord/space-discovery" {
+                                        if let crate::crdt::OpType::CreateSpace(payload) = &op.op_type {
+                                            if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
+                                                println!("📢 Discovered space: {} (space_{})", name, ::hex::encode(&op.space_id.0[..4]));
+                                                
+                                                // Auto-subscribe to the space topic
+                                                let space_topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
+                                                let mut net = network.write().await;
+                                                if let Ok(_) = net.subscribe(&space_topic).await {
+                                                    println!("  → Auto-subscribed to {}", space_topic);
+                                                }
+                                                drop(net);
                                             }
-                                            drop(net);
                                         }
+                                    }
+                                    
+                                    // Store the operation (persistence + deduplication)
+                                    if let Err(e) = store.put_op(&op) {
+                                        eprintln!("⚠️ Failed to store operation: {}", e);
+                                        continue;
+                                    }
+                                    
+                                    // Process based on operation type
+                                    match &op.op_type {
+                                        crate::crdt::OpType::CreateSpace(payload) => {
+                                            if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
+                                                let mut manager = space_manager.write().await;
+                                                let _ = manager.process_create_space(&op);
+                                                
+                                                println!("✓ Processed CreateSpace: {} ({})", name, op.space_id);
+                                            }
+                                        }
+                                        crate::crdt::OpType::UpdateSpaceVisibility(_) => {
+                                            let mut manager = space_manager.write().await;
+                                            let _ = manager.process_update_space_visibility(&op);
+                                        }
+                                        crate::crdt::OpType::CreateChannel(_) => {
+                                            let mut manager = channel_manager.write().await;
+                                            let _ = manager.process_create_channel(&op);
+                                        }
+                                        crate::crdt::OpType::CreateThread(_) => {
+                                            let mut manager = thread_manager.write().await;
+                                            let _ = manager.process_create_thread(&op);
+                                        }
+                                        crate::crdt::OpType::PostMessage(_) => {
+                                            let mut manager = thread_manager.write().await;
+                                            let _ = manager.process_post_message(&op);
+                                        }
+                                        crate::crdt::OpType::EditMessage(_) => {
+                                            let mut manager = thread_manager.write().await;
+                                            let _ = manager.process_edit_message(&op);
+                                        }
+                                        _ => {}
                                     }
                                 }
-                                
-                                // Store the operation
-                                let _ = store.put_op(&op);
-                                
-                                // Process based on operation type
-                                match &op.op_type {
-                                    crate::crdt::OpType::CreateSpace(payload) => {
-                                        if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
-                                            let mut manager = space_manager.write().await;
-                                            let _ = manager.process_create_space(&op);
-                                            
-                                            println!("✓ Processed CreateSpace: {} ({})", name, op.space_id);
-                                        }
-                                    }
-                                    crate::crdt::OpType::UpdateSpaceVisibility(_) => {
-                                        let mut manager = space_manager.write().await;
-                                        let _ = manager.process_update_space_visibility(&op);
-                                    }
-                                    crate::crdt::OpType::CreateChannel(_) => {
-                                        let mut manager = channel_manager.write().await;
-                                        let _ = manager.process_create_channel(&op);
-                                    }
-                                    crate::crdt::OpType::CreateThread(_) => {
-                                        let mut manager = thread_manager.write().await;
-                                        let _ = manager.process_create_thread(&op);
-                                    }
-                                    crate::crdt::OpType::PostMessage(_) => {
-                                        let mut manager = thread_manager.write().await;
-                                        let _ = manager.process_post_message(&op);
-                                    }
-                                    crate::crdt::OpType::EditMessage(_) => {
-                                        let mut manager = thread_manager.write().await;
-                                        let _ = manager.process_edit_message(&op);
-                                    }
-                                    _ => {}
+                                Err(e) => {
+                                    eprintln!("⚠️ Failed to decode CRDT operation: {}", e);
                                 }
                             }
                         }
@@ -760,9 +804,14 @@ impl Client {
         
         // Attempt to publish, but don't fail if no peers are connected
         // This is expected in single-node scenarios and tests
-        let _ = network.publish(topic, data).await;
+        let result = network.publish(topic, data).await;
         
-        Ok(())
+        // Record metrics
+        if result.is_ok() {
+            self.gossip_metrics.record_publish(topic).await;
+        }
+        
+        result.or(Ok(()))
     }
     
     /// Subscribe to a Space's operation stream
@@ -1066,6 +1115,16 @@ impl Client {
     /// Get current relay information
     pub async fn current_relay(&self) -> Option<crate::network::relay::RelayInfo> {
         self.current_relay.read().await.clone()
+    }
+    
+    /// Get GossipSub metrics
+    pub fn gossip_metrics(&self) -> Arc<crate::network::GossipMetrics> {
+        Arc::clone(&self.gossip_metrics)
+    }
+    
+    /// Print GossipSub metrics summary
+    pub async fn print_gossip_metrics(&self) {
+        self.gossip_metrics.print_summary().await;
     }
     
     /// Helper to clone necessary fields for rotation task

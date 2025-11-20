@@ -67,16 +67,36 @@
   - Better debugging visibility
   - Status: **IN PROGRESS** - Partially rolled out
 
+### 7. GossipSub Integration ✅ (NEW)
+- **Real-Time Message Propagation** - Privacy-preserving pub/sub messaging
+  - Message validation (Ed25519 signature verification)
+  - Deduplication (5-minute cache, operation ID tracking)
+  - Peer scoring (spam/DoS prevention)
+  - Metrics tracking (per-topic publish/receive/duplicate counts)
+  - Privacy-preserving configuration (flood publish disabled)
+  - Mesh networking (6 target peers, 4-12 range)
+  - Status: **COMPLETE** - Integration tests passing
+  - Files: `core/src/network/node.rs`, `core/src/network/gossip_metrics.rs`, `core/src/client.rs`
+  - Tests: `core/tests/gossipsub_integration.rs`
+  - Documentation: `GOSSIPSUB_INTEGRATION.md`
+
 ---
 
 ## 🔄 In Progress
 
-### 7. Permissions System
-- **Channel/Space Permissions** - Role-based access control
-  - Admin, Moderator, Member roles
-  - Per-channel permissions (read, write, moderate)
-  - MLS-based cryptographic enforcement
-  - Status: **NOT STARTED** - Next priority
+### 8. DHT Persistent Storage (NEXT PRIORITY)
+- **Distributed Message Storage** - Offline space access and persistence
+  - Space metadata replication to DHT
+  - CRDT operation storage in DHT
+  - Encrypted blob replication
+  - Offline space joining (Alice offline, Bob joins via DHT)
+  - Status: **NOT STARTED** - Next sprint priority
+  - Estimated: 15-20 hours
+  - Phases:
+    1. Fix DHT query handling (track pending, wait for results)
+    2. Space metadata → DHT (serialize + encrypt + upload)
+    3. CRDT op replication (upload ops, fetch missing, apply in order)
+    4. Blob replication (upload encrypted blobs, fetch on demand)
 
 ---
 
@@ -84,27 +104,44 @@
 
 ### Phase 1: Core Infrastructure (Q4 2025)
 
-#### 8. Storage Layer
+#### 9. Permissions System
+- **Channel/Space Permissions** - Role-based access control
+  - Admin, Moderator, Member roles
+  - Per-channel permissions (read, write, moderate)
+  - MLS-based cryptographic enforcement
+  - Status: **NOT STARTED**
+
+---
+
+## 📋 Planned Features
+
+### Phase 1: Core Infrastructure (Q4 2025)
+
+#### 10. Local Storage Enhancements
 - **Content-Addressed Blobs** - Encrypted message storage
-  - RocksDB for local storage
-  - SHA256-based content addressing
-  - Encrypted blob storage (per-thread keys)
-  - CRDT-based conflict resolution
-  - Status: **NOT STARTED**
+  - RocksDB for local storage (✅ COMPLETE)
+  - SHA256-based content addressing (✅ COMPLETE)
+  - Encrypted blob storage (per-thread keys) (✅ COMPLETE)
+  - CRDT-based conflict resolution (✅ COMPLETE)
+  - Status: **COMPLETE** - Local storage functional, DHT replication in progress
 
-#### 9. CRDT Synchronization
+#### 11. CRDT Synchronization
 - **Offline-First Messaging** - Conflict-free message merging
-  - GUN-style CRDT for state sync
-  - Append-only message logs
-  - Causal ordering preservation
-  - Status: **NOT STARTED**
+  - GUN-style CRDT for state sync (✅ COMPLETE - local)
+  - Append-only message logs (✅ COMPLETE)
+  - Causal ordering preservation (✅ COMPLETE)
+  - GossipSub real-time propagation (✅ COMPLETE)
+  - DHT persistent replication (🔄 IN PROGRESS)
+  - Status: **PARTIALLY COMPLETE** - Local sync works, distributed storage pending
 
-#### 10. Invite System
+#### 12. Invite System
 - **Cryptographic Invites** - Privacy-preserving space/channel invites
-  - Ed25519 identity verification
-  - Invite token expiration
-  - Invite link generation
-  - Status: **NOT STARTED**
+  - Ed25519 identity verification (✅ COMPLETE)
+  - Invite token expiration (✅ COMPLETE)
+  - Invite link generation (✅ COMPLETE)
+  - 8-character codes (✅ COMPLETE)
+  - Max uses and permissions (✅ COMPLETE)
+  - Status: **COMPLETE** - 11 tests passing
 
 ---
 

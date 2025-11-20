@@ -98,6 +98,27 @@ impl CrdtOp {
         minicbor::to_vec(&data).expect("CBOR encoding should not fail")
     }
 
+    /// Verify the cryptographic signature on this operation
+    /// 
+    /// Validates that the operation was signed by the claimed author
+    pub fn verify_signature(&self) -> bool {
+        use ed25519_dalek::Verifier;
+        
+        let signing_bytes = self.signing_bytes();
+        
+        // Extract public key from author (UserId is Ed25519 public key)
+        let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&self.author.0) {
+            Ok(key) => key,
+            Err(_) => return false,
+        };
+        
+        // Parse signature
+        let signature = ed25519_dalek::Signature::from_bytes(&self.signature.0);
+        
+        // Verify
+        public_key.verify(&signing_bytes, &signature).is_ok()
+    }
+
     /// Check if this operation causally depends on another
     pub fn depends_on(&self, other: &OpId) -> bool {
         self.prev_ops.contains(other)

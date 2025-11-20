@@ -192,22 +192,34 @@
 3. ✅ Implement permissions system - **DONE**
 4. ✅ Message deletion system - **DONE**
 5. ✅ Integration test organization - **DONE**
+6. ✅ Storage Layer Phase 1 - **DONE** (24 tests passing)
 
 ### Completed This Sprint:
 - **Permissions System**: 21 tests (13 unit + 7 MLS + 1 integration)
 - **Message Deletion**: 3 integration tests demonstrating moderation flow
 - **Integration Test Refactor**: Created `tests/integration/` directory with modular tests
-- **Privacy Score Improvement**: 80% → 85% with cryptographic permission enforcement
+- **Storage Layer Phase 1**: RocksDB + encrypted blobs + message indices + CRDT state (24 tests)
+  - Blob storage with AES-256-GCM encryption
+  - SHA256 content addressing for deduplication
+  - Message indexing (thread, user, message ID)
+  - CRDT vector clocks and tombstones
+  - All tests passing in 1.58s
+- **Privacy Score**: 85% (cryptographic permission enforcement + encrypted storage)
 
 ### Next Steps:
-**Option A: Storage Layer** (Recommended for MVP)
-- RocksDB integration for persistent message storage
-- Content-addressed encrypted blobs (SHA256 hashing)
-- CRDT-based conflict resolution
+**Option A: Storage Phase 2** (CRDT Sync Implementation)
 - Offline message synchronization
-- **Why:** Required for real application, builds on permissions
+- Conflict resolution with vector clocks
+- Sync protocol implementation
+- **Why:** Complete storage layer, enable offline-first
 
-**Option B: Security Hardening**
+**Option B: Storage Phase 3** (Optimization)
+- Lazy blob loading (on-demand fetch)
+- Compression (LZ4)
+- Relay reputation caching
+- **Why:** Performance improvements
+
+**Option C: Security Hardening**
 - Onion routing for blob transfers (3-hop minimum)
 - Metadata reduction (traffic padding, timing delays)
 - DHT privacy hardening (Veilid integration)

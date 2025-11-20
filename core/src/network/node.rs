@@ -2,13 +2,13 @@
 //!
 //! Provides peer-to-peer networking with:
 //! - Kademlia DHT for peer discovery
-//! - Relay for NAT traversal
+//! - Circuit Relay v2 for NAT traversal and IP privacy
 //! - GossipSub for pub/sub messaging
 //! - Noise for transport encryption
 
 use libp2p::{
     gossipsub, identity, kad,
-    noise,
+    noise, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm,
     futures::StreamExt,
@@ -24,6 +24,13 @@ use crate::{Error, Result};
 pub enum NetworkCommand {
     /// Dial a peer
     Dial { addr: Multiaddr, response: oneshot::Sender<Result<()>> },
+    /// Dial a peer via relay
+    DialViaRelay { 
+        relay_addr: Multiaddr,
+        relay_peer_id: PeerId,
+        target_peer_id: PeerId,
+        response: oneshot::Sender<Result<()>> 
+    },
     /// Subscribe to a topic
     Subscribe { topic: String, response: oneshot::Sender<Result<()>> },
     /// Publish to a topic
@@ -123,7 +130,8 @@ impl NetworkNode {
         )
         .map_err(|e| Error::Network(format!("GossipSub creation error: {}", e)))?;
         
-        // Create behavior (no relay for simplicity)
+        // Create behavior WITHOUT relay client for now (relay requires different transport setup)
+        // TODO: Integrate relay transport properly with custom transport builder
         let behaviour = DescordBehaviour {
             kademlia,
             gossipsub,
@@ -200,6 +208,25 @@ impl NetworkNode {
             .map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
     
+    /// Dial a peer via relay (for IP privacy)
+    pub async fn dial_via_relay(
+        &mut self,
+        relay_addr: Multiaddr,
+        relay_peer_id: PeerId,
+        target_peer_id: PeerId,
+    ) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx.send(NetworkCommand::DialViaRelay {
+            relay_addr,
+            relay_peer_id,
+            target_peer_id,
+            response: tx,
+        })
+        .map_err(|_| Error::Network("Network thread died".to_string()))?;
+        rx.await
+            .map_err(|_| Error::Network("Response channel closed".to_string()))?
+    }
+    
     /// Subscribe to a GossipSub topic
     pub async fn subscribe(&mut self, topic: &str) -> Result<()> {
         let (tx, rx) = oneshot::channel();
@@ -245,6 +272,21 @@ impl NetworkWorker {
                         NetworkCommand::Dial { addr, response } => {
                             let result = self.swarm.dial(addr.clone())
                                 .map_err(|e| Error::Network(format!("Dial failed: {}", e)));
+                            let _ = response.send(result);
+                        }
+                        NetworkCommand::DialViaRelay { relay_addr, relay_peer_id, target_peer_id, response } => {
+                            // First, dial the relay if not connected
+                            let _ = self.swarm.dial(relay_addr.clone());
+                            
+                            // Build relay multiaddr: /ip4/.../tcp/.../p2p/{relay}/p2p-circuit/p2p/{target}
+                            let relay_multiaddr = crate::network::relay::relay_multiaddr(
+                                &relay_addr,
+                                &relay_peer_id,
+                                &target_peer_id
+                            );
+                            
+                            let result = self.swarm.dial(relay_multiaddr)
+                                .map_err(|e| Error::Network(format!("Relay dial failed: {}", e)));
                             let _ = response.send(result);
                         }
                         NetworkCommand::Subscribe { topic, response } => {

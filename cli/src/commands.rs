@@ -141,7 +141,7 @@ impl CommandHandler {
                 return Ok(());
             }
 
-            let (space, _op) = {
+            let (space, _op, _privacy_info) = {
                 let client = self.client.read().await;
                 client.create_space(
                     name.clone(),

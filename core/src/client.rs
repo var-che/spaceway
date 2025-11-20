@@ -732,6 +732,127 @@ impl Client {
         Ok(all_ops)
     }
     
+    // ========================================================================
+    // DHT Blob Storage (Phase 4: Encrypted Blob Replication)
+    // ========================================================================
+    
+    /// Store an encrypted blob in the DHT for offline availability
+    /// 
+    /// Takes a locally-encrypted blob and encrypts it again with the Space-derived
+    /// key before storing in the DHT. This allows Space members to discover and
+    /// fetch blobs even when the original author is offline.
+    pub async fn dht_put_blob(
+        &self,
+        space_id: &SpaceId,
+        blob_hash: &crate::storage::BlobHash,
+        local_blob: &crate::storage::EncryptedBlob,
+    ) -> Result<()> {
+        use crate::storage::{DhtBlob, BlobIndex};
+        
+        // Encrypt blob for DHT storage
+        let dht_blob = DhtBlob::encrypt(space_id, blob_hash, local_blob)?;
+        
+        // Serialize for DHT
+        let blob_bytes = dht_blob.to_bytes()?;
+        
+        // Compute DHT key
+        let blob_key = dht_blob.dht_key();
+        
+        // First, fetch or create the index
+        let mut network = self.network.write().await;
+        let index_key = BlobIndex::compute_dht_key(space_id);
+        
+        let mut index = match network.dht_get(index_key.clone()).await {
+            Ok(values) if !values.is_empty() => {
+                BlobIndex::from_bytes(&values[0])?
+            }
+            _ => {
+                // Create new index
+                BlobIndex::new(*space_id)
+            }
+        };
+        
+        // Store blob in DHT
+        network.dht_put(blob_key, blob_bytes).await?;
+        
+        // Update index (approximate size - we don't track exact size here)
+        index.add_blob(*blob_hash, dht_blob.ciphertext.len() as u64);
+        
+        // Store updated index
+        let index_bytes = index.to_bytes()?;
+        network.dht_put(index_key, index_bytes).await?;
+        
+        println!("✓ Stored blob in DHT: {} bytes", dht_blob.ciphertext.len());
+        
+        Ok(())
+    }
+    
+    /// Retrieve an encrypted blob from the DHT
+    /// 
+    /// Fetches the blob, decrypts the DHT layer, and returns the locally-encrypted
+    /// blob. The caller must then decrypt with the local key.
+    pub async fn dht_get_blob(
+        &self,
+        space_id: &SpaceId,
+        blob_hash: &crate::storage::BlobHash,
+    ) -> Result<crate::storage::EncryptedBlob> {
+        use crate::storage::DhtBlob;
+        
+        // Compute DHT key
+        let blob_key = DhtBlob::compute_dht_key(space_id, blob_hash);
+        
+        // Fetch from DHT
+        let mut network = self.network.write().await;
+        let values = network.dht_get(blob_key).await?;
+        
+        if values.is_empty() {
+            return Err(Error::NotFound(format!("Blob {:?} not found in DHT", blob_hash.to_hex())));
+        }
+        
+        // Deserialize and decrypt
+        let dht_blob = DhtBlob::from_bytes(&values[0])?;
+        
+        // Verify Space ID and hash match
+        if dht_blob.space_id != *space_id {
+            return Err(Error::InvalidOperation("Space ID mismatch in blob".to_string()));
+        }
+        if dht_blob.content_hash != *blob_hash {
+            return Err(Error::InvalidOperation("Blob hash mismatch".to_string()));
+        }
+        
+        // Decrypt DHT layer to get locally-encrypted blob
+        let local_blob = dht_blob.decrypt()?;
+        
+        println!("✓ Retrieved blob from DHT: {} bytes", dht_blob.ciphertext.len());
+        
+        Ok(local_blob)
+    }
+    
+    /// Retrieve all blob hashes available in the DHT for a Space
+    /// 
+    /// Useful for discovering what blobs can be fetched.
+    pub async fn dht_list_blobs(&self, space_id: &SpaceId) -> Result<Vec<crate::storage::BlobHash>> {
+        use crate::storage::BlobIndex;
+        
+        // Fetch index
+        let mut network = self.network.write().await;
+        let index_key = BlobIndex::compute_dht_key(space_id);
+        
+        let index = match network.dht_get(index_key).await {
+            Ok(values) if !values.is_empty() => {
+                BlobIndex::from_bytes(&values[0])?
+            }
+            _ => {
+                // No blobs stored yet
+                return Ok(Vec::new());
+            }
+        };
+        
+        println!("✓ Found {} blobs in DHT for Space", index.blob_hashes.len());
+        
+        Ok(index.blob_hashes)
+    }
+    
     /// Get a specific invite
     pub async fn get_invite(&self, space_id: &SpaceId, invite_id: &InviteId) -> Option<Invite> {
         let manager = self.space_manager.read().await;

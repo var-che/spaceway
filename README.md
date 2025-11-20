@@ -31,6 +31,32 @@ A fully decentralized, privacy-preserving forum system with CRDT-based synchroni
 
 ## 🚀 Quick Start - 3 Person Test
 
+### Option 1: Automated Beta Test (Recommended)
+
+**Windows (PowerShell):**
+```powershell
+# Terminal 1: Start relay server
+cargo run --package descord-relay --release
+
+# Terminal 2: Run automated beta test
+cargo test --package descord-core --test beta_test -- --ignored --nocapture
+```
+
+**Or use the interactive menu:**
+```powershell
+.\beta-test.ps1
+```
+
+This automated test simulates 3 users (Alice, Bob, Charlie):
+- ✅ Connects via relay (no IP exposure)
+- ✅ Creates spaces, channels, threads
+- ✅ Posts encrypted messages (E2EE)
+- ✅ Tests relay rotation
+- ✅ Verifies privacy guarantees
+- ⏱️ Duration: ~60 seconds
+
+### Option 2: Manual Three-Person Test
+
 Test Descord with 3 people on your local machine:
 
 ### Terminal 1 - Alice
@@ -97,18 +123,31 @@ See [`GETTING_STARTED.md`](GETTING_STARTED.md) for more details.
 ## 🧪 Testing
 
 ```powershell
-# Run all tests (60 tests, 100% passing)
-cargo test
+# Quick automated beta test (recommended)
+.\beta-test.ps1           # Windows
+./beta-test.sh            # Linux/macOS
 
-# Run integration tests
-cargo test --test integration_test
+# Or manually:
+# Terminal 1: Start relay
+cargo run --package descord-relay --release
 
-# Run three-person simulation test
-cargo test --test three_person_test
+# Terminal 2: Run automated beta test
+cargo test --package descord-core --test beta_test -- --ignored --nocapture
 
-# Run with output
-cargo test -- --nocapture
+# Run all unit tests (107 tests)
+cargo test --package descord-core --lib
+
+# Run all integration tests
+cargo test --package descord-core --test '*'
+
+# Run privacy verification
+cargo test --package descord-core --test full_relay_integration_test
 ```
+
+**Beta Testing Guides:**
+- 📖 [`BETA_QUICK_START.md`](BETA_QUICK_START.md) - One-page quick reference
+- 📚 [`BETA_TESTING.md`](BETA_TESTING.md) - Comprehensive testing guide
+- 🔒 [`SECURITY_ANALYSIS.md`](SECURITY_ANALYSIS.md) - Security & privacy analysis
 
 ## 📚 Library Usage
 

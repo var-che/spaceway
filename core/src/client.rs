@@ -8,7 +8,7 @@ use crate::crypto::signing::Keypair;
 use crate::forum::{Space, SpaceManager, Channel, ChannelManager, Thread, ThreadManager, Message};
 use crate::mls::provider::{create_provider, DescordProvider};
 use crate::network::{NetworkNode, NetworkEvent};
-use crate::storage::{Store, BlobMetadata};
+use crate::storage::Store;
 use crate::types::*;
 use crate::{Error, Result};
 
@@ -56,8 +56,8 @@ pub struct Client {
     /// Thread manager
     thread_manager: Arc<RwLock<ThreadManager>>,
     
-    // TODO: Add blob_storage using new Storage API in Phase 1 integration
-    // blob_storage: Arc<Storage>,
+    /// Storage backend for encrypted blobs
+    storage: Arc<crate::storage::Storage>,
     
     /// Network node
     network: Arc<RwLock<NetworkNode>>,
@@ -77,15 +77,16 @@ impl Client {
     pub fn new(keypair: Keypair, config: ClientConfig) -> Result<Self> {
         let user_id = keypair.user_id();
         
-        // Create storage
+        // Create storage backends
         let store = Arc::new(Store::open(&config.storage_path)?);
         
         // Create managers
         let space_manager = Arc::new(RwLock::new(SpaceManager::new()));
         let channel_manager = Arc::new(RwLock::new(ChannelManager::new()));
         let thread_manager = Arc::new(RwLock::new(ThreadManager::new()));
-        // TODO: Initialize new Storage in Phase 1 integration
-        // let blob_storage = Arc::new(Storage::open(&config.storage_path.join("blobs"))?);
+        
+        // Initialize blob storage
+        let storage = Arc::new(crate::storage::Storage::open(&config.storage_path)?);
         
         // Create network
         let (network_node, network_rx) = NetworkNode::new()?;
@@ -101,7 +102,7 @@ impl Client {
             space_manager,
             channel_manager,
             thread_manager,
-            // blob_storage,
+            storage,
             network,
             network_rx,
             store,
@@ -616,20 +617,73 @@ impl Client {
     }
     
     /// Store a blob (attachment, media)
-    /// TODO: Implement using new Storage API in Phase 1 integration
+    /// 
+    /// Encrypts the data using a key derived from the user's keypair and returns
+    /// the content-addressed hash along with metadata.
     pub async fn store_blob(
         &self,
-        _data: &[u8],
-        _mime_type: Option<String>,
-        _filename: Option<String>,
-    ) -> Result<BlobMetadata> {
-        unimplemented!("Blob storage will be implemented in Phase 1 integration")
+        data: &[u8],
+        mime_type: Option<String>,
+        filename: Option<String>,
+    ) -> Result<crate::storage::indices::BlobMetadata> {
+        // Derive encryption key from user's keypair
+        // For user-specific blobs (attachments), we use a user-derived key
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(b"descord-user-blob-key-v1");
+        hasher.update(&self.user_id.0);
+        let key_bytes: [u8; 32] = hasher.finalize().into();
+        
+        // Store encrypted blob
+        let hash = self.storage.store_blob(data, &key_bytes)?;
+        
+        // Create metadata
+        let metadata = crate::storage::indices::BlobMetadata {
+            hash,
+            size: data.len() as u64,
+            mime_type,
+            filename,
+            uploaded_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            uploader: self.user_id,
+            thread_id: None, // User-uploaded blobs not tied to a thread
+        };
+        
+        // Store metadata in index
+        self.storage.store_blob_metadata(&hash, &metadata)?;
+        
+        tracing::info!(
+            hash = %hash.to_hex(),
+            size = data.len(),
+            "Stored blob"
+        );
+        
+        Ok(metadata)
     }
     
     /// Retrieve a blob by hash
-    /// TODO: Implement using new Storage API in Phase 1 integration  
-    pub async fn retrieve_blob(&self, _hash: &ContentHash) -> Result<Vec<u8>> {
-        unimplemented!("Blob storage will be implemented in Phase 1 integration")
+    /// 
+    /// Decrypts and returns the blob data. Verifies content integrity.
+    pub async fn retrieve_blob(&self, hash: &crate::storage::BlobHash) -> Result<Vec<u8>> {
+        // Derive the same encryption key
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(b"descord-user-blob-key-v1");
+        hasher.update(&self.user_id.0);
+        let key_bytes: [u8; 32] = hasher.finalize().into();
+        
+        // Load and decrypt blob
+        let plaintext = self.storage.load_blob(hash, &key_bytes)?;
+        
+        tracing::debug!(
+            hash = %hash.to_hex(),
+            size = plaintext.len(),
+            "Retrieved blob"
+        );
+        
+        Ok(plaintext.to_vec())
     }
     
     /// Broadcast a CRDT operation to the network
@@ -868,15 +922,21 @@ mod tests {
         
         let client = Client::new(keypair, config).unwrap();
         
-        // TODO: Re-enable after Phase 1 integration
-        // let data = b"Test attachment data";
-        // let metadata = client.store_blob(
-        //     data,
-        //     Some("text/plain".to_string()),
-        //     Some("test.txt".to_string()),
-        // ).await.unwrap();
+        // Store a blob
+        let data = b"Test attachment data";
+        let metadata = client.store_blob(
+            data,
+            Some("text/plain".to_string()),
+            Some("test.txt".to_string()),
+        ).await.unwrap();
         
-        // let retrieved = client.retrieve_blob(&metadata.hash).await.unwrap();
-        // assert_eq!(retrieved, data);
+        assert_eq!(metadata.size, data.len() as u64);
+        assert_eq!(metadata.mime_type, Some("text/plain".to_string()));
+        assert_eq!(metadata.filename, Some("test.txt".to_string()));
+        assert_eq!(metadata.uploader, client.user_id);
+        
+        // Retrieve the blob
+        let retrieved = client.retrieve_blob(&metadata.hash).await.unwrap();
+        assert_eq!(&retrieved[..], &data[..]);
     }
 }

@@ -31,6 +31,12 @@ pub struct Space {
     /// Visibility and discoverability settings
     pub visibility: SpaceVisibility,
     
+    /// Active invites (invite_id -> invite)
+    pub invites: HashMap<InviteId, Invite>,
+    
+    /// Invite permissions for this space
+    pub invite_permissions: InvitePermissions,
+    
     /// Current MLS epoch
     pub epoch: EpochId,
     
@@ -57,6 +63,8 @@ impl Space {
             owner,
             members,
             visibility: SpaceVisibility::default(),
+            invites: HashMap::new(),
+            invite_permissions: InvitePermissions::default(),
             epoch: EpochId(0),
             created_at,
         }
@@ -81,6 +89,8 @@ impl Space {
             owner,
             members,
             visibility,
+            invites: HashMap::new(),
+            invite_permissions: InvitePermissions::default(),
             epoch: EpochId(0),
             created_at,
         }
@@ -503,6 +513,327 @@ impl SpaceManager {
     /// Get MLS group for a Space
     pub fn get_mls_group(&self, space_id: &SpaceId) -> Option<&MlsGroup> {
         self.mls_groups.get(space_id)
+    }
+    
+    /// Generate a random invite code (8 characters, alphanumeric)
+    fn generate_invite_code() -> String {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut rng = rand::thread_rng();
+        
+        (0..8)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
+    }
+    
+    /// Create a new invite for a space
+    pub fn create_invite(
+        &mut self,
+        space_id: SpaceId,
+        creator: UserId,
+        creator_keypair: &crate::crypto::signing::Keypair,
+        max_uses: Option<u32>,
+        max_age_hours: Option<u32>,
+    ) -> Result<CrdtOp> {
+        let space = self.spaces.get(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Check permissions
+        let creator_role = space.get_role(&creator)
+            .ok_or_else(|| Error::Rejected("Not a member of the space".to_string()))?;
+        
+        if !Invite::can_create(*creator_role, &space.invite_permissions) {
+            return Err(Error::Rejected(
+                "Insufficient permissions to create invites".to_string()
+            ));
+        }
+        
+        // Create invite
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let expires_at = max_age_hours.map(|hours| {
+            current_time + (hours as u64 * 3600)
+        });
+        
+        let invite = Invite {
+            id: InviteId(uuid::Uuid::new_v4()),
+            space_id,
+            creator,
+            code: Self::generate_invite_code(),
+            max_uses,
+            expires_at,
+            uses: 0,
+            created_at: current_time,
+            revoked: false,
+        };
+        
+        // Create CRDT operation
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::CreateInvite(OpPayload::CreateInvite {
+                invite: invite.clone(),
+            }),
+            prev_ops: vec![],
+            author: creator,
+            epoch: space.epoch,
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(creator_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally
+        let space = self.spaces.get_mut(&space_id).unwrap();
+        space.invites.insert(invite.id, invite);
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+    
+    /// Revoke an invite
+    pub fn revoke_invite(
+        &mut self,
+        space_id: SpaceId,
+        invite_id: InviteId,
+        revoker: UserId,
+        revoker_keypair: &crate::crypto::signing::Keypair,
+    ) -> Result<CrdtOp> {
+        let space = self.spaces.get(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Check permissions (admins and invite creator can revoke)
+        let revoker_role = space.get_role(&revoker)
+            .ok_or_else(|| Error::Rejected("Not a member of the space".to_string()))?;
+        
+        let invite = space.invites.get(&invite_id)
+            .ok_or_else(|| Error::NotFound(format!("Invite {:?} not found", invite_id)))?;
+        
+        if !revoker_role.can_moderate() && invite.creator != revoker {
+            return Err(Error::Rejected(
+                "Only admins/moderators or invite creator can revoke invites".to_string()
+            ));
+        }
+        
+        // Create CRDT operation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::RevokeInvite(OpPayload::RevokeInvite {
+                invite_id,
+            }),
+            prev_ops: vec![],
+            author: revoker,
+            epoch: space.epoch,
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(revoker_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally
+        let space = self.spaces.get_mut(&space_id).unwrap();
+        if let Some(invite) = space.invites.get_mut(&invite_id) {
+            invite.revoked = true;
+        }
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+    
+    /// Use an invite to join a space
+    pub fn use_invite(
+        &mut self,
+        space_id: SpaceId,
+        code: String,
+        joiner: UserId,
+        joiner_keypair: &crate::crypto::signing::Keypair,
+    ) -> Result<CrdtOp> {
+        let space = self.spaces.get(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Find invite by code
+        let invite = space.invites.values()
+            .find(|inv| inv.code == code && inv.space_id == space_id)
+            .ok_or_else(|| Error::NotFound("Invalid invite code".to_string()))?;
+        
+        // Validate invite
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        if !invite.is_valid(current_time) {
+            return Err(Error::Rejected("Invite is no longer valid".to_string()));
+        }
+        
+        // Check if already a member
+        if space.is_member(&joiner) {
+            return Err(Error::AlreadyExists("Already a member of this space".to_string()));
+        }
+        
+        let invite_id = invite.id;
+        
+        // Create CRDT operation for using the invite
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::UseInvite(OpPayload::UseInvite {
+                invite_id,
+                code: code.clone(),
+            }),
+            prev_ops: vec![],
+            author: joiner,
+            epoch: space.epoch,
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(joiner_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally
+        let space = self.spaces.get_mut(&space_id).unwrap();
+        // Increment invite use count
+        if let Some(invite) = space.invites.get_mut(&invite_id) {
+            invite.uses += 1;
+        }
+        // Add member with default role
+        space.add_member(joiner, Role::Member);
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+    
+    /// Get all invites for a space
+    pub fn list_invites(&self, space_id: &SpaceId) -> Vec<&Invite> {
+        if let Some(space) = self.spaces.get(space_id) {
+            space.invites.values().collect()
+        } else {
+            vec![]
+        }
+    }
+    
+    /// Get a specific invite by ID
+    pub fn get_invite(&self, space_id: &SpaceId, invite_id: &InviteId) -> Option<&Invite> {
+        self.spaces.get(space_id)
+            .and_then(|space| space.invites.get(invite_id))
+    }
+    
+    /// Process a remote CreateInvite operation
+    pub fn process_create_invite(&mut self, op: &CrdtOp) -> Result<()> {
+        if let OpType::CreateInvite(OpPayload::CreateInvite { invite }) = &op.op_type {
+            // Validate the operation
+            match self.validator.validate(op, &self.operations) {
+                ValidationResult::Accept => {
+                    // Apply the operation
+                    if let Some(space) = self.spaces.get_mut(&op.space_id) {
+                        space.invites.insert(invite.id, invite.clone());
+                        self.operations.insert(op.op_id, op.clone());
+                        self.validator.apply_op(op);
+                    }
+                    Ok(())
+                }
+                ValidationResult::Buffered(_) => {
+                    // TODO: Properly handle buffering with missing_deps
+                    Ok(())
+                }
+                ValidationResult::Reject(_) => {
+                    Err(Error::Rejected("Operation validation failed".to_string()))
+                }
+            }
+        } else {
+            Err(Error::Crdt("Invalid operation type for process_create_invite".to_string()))
+        }
+    }
+    
+    /// Process a remote RevokeInvite operation
+    pub fn process_revoke_invite(&mut self, op: &CrdtOp) -> Result<()> {
+        if let OpType::RevokeInvite(OpPayload::RevokeInvite { invite_id }) = &op.op_type {
+            // Validate the operation
+            match self.validator.validate(op, &self.operations) {
+                ValidationResult::Accept => {
+                    // Apply the operation
+                    if let Some(space) = self.spaces.get_mut(&op.space_id) {
+                        if let Some(invite) = space.invites.get_mut(invite_id) {
+                            invite.revoked = true;
+                        }
+                        self.operations.insert(op.op_id, op.clone());
+                        self.validator.apply_op(op);
+                    }
+                    Ok(())
+                }
+                ValidationResult::Buffered(_) => {
+                    // TODO: Properly handle buffering with missing_deps
+                    Ok(())
+                }
+                ValidationResult::Reject(_) => {
+                    Err(Error::Rejected("Operation validation failed".to_string()))
+                }
+            }
+        } else {
+            Err(Error::Crdt("Invalid operation type for process_revoke_invite".to_string()))
+        }
+    }
+    
+    /// Process a remote UseInvite operation
+    pub fn process_use_invite(&mut self, op: &CrdtOp) -> Result<()> {
+        if let OpType::UseInvite(OpPayload::UseInvite { invite_id, .. }) = &op.op_type {
+            // Validate the operation
+            match self.validator.validate(op, &self.operations) {
+                ValidationResult::Accept => {
+                    // Apply the operation
+                    if let Some(space) = self.spaces.get_mut(&op.space_id) {
+                        // Increment invite use count
+                        if let Some(invite) = space.invites.get_mut(invite_id) {
+                            invite.uses += 1;
+                        }
+                        // Add member
+                        space.add_member(op.author, Role::Member);
+                        self.operations.insert(op.op_id, op.clone());
+                        self.validator.apply_op(op);
+                    }
+                    Ok(())
+                }
+                ValidationResult::Buffered(_) => {
+                    // TODO: Properly handle buffering with missing_deps
+                    Ok(())
+                }
+                ValidationResult::Reject(_) => {
+                    Err(Error::Rejected("Operation validation failed".to_string()))
+                }
+            }
+        } else {
+            Err(Error::Crdt("Invalid operation type for process_use_invite".to_string()))
+        }
     }
 }
 

@@ -183,6 +183,18 @@ pub enum OpType {
     /// Ban a user
     #[n(14)]
     BanUser(#[n(0)] OpPayload),
+
+    /// Create an invite
+    #[n(15)]
+    CreateInvite(#[n(0)] OpPayload),
+
+    /// Revoke an invite
+    #[n(16)]
+    RevokeInvite(#[n(0)] OpPayload),
+
+    /// Use an invite (join via invite)
+    #[n(17)]
+    UseInvite(#[n(0)] OpPayload),
 }
 
 /// Operation payload (type-specific data)
@@ -316,6 +328,29 @@ pub enum OpPayload {
         user_id: UserId,
         #[n(1)]
         reason: Option<String>,
+    },
+
+    /// Create invite payload
+    #[n(14)]
+    CreateInvite {
+        #[n(0)]
+        invite: Invite,
+    },
+
+    /// Revoke invite payload
+    #[n(15)]
+    RevokeInvite {
+        #[n(0)]
+        invite_id: InviteId,
+    },
+
+    /// Use invite payload
+    #[n(16)]
+    UseInvite {
+        #[n(0)]
+        invite_id: InviteId,
+        #[n(1)]
+        code: String,
     },
 }
 

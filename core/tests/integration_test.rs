@@ -36,7 +36,7 @@ async fn test_single_client_basic_operations() -> Result<()> {
     println!("Created client with user ID: {}", hex::encode(user_id.as_bytes()));
     
     // Create a Space
-    let (space, _op) = client.create_space(
+    let (space, _op, _) = client.create_space(
         "Test Space".to_string(),
         Some("A test community".to_string()),
     ).await?;
@@ -167,7 +167,7 @@ async fn test_multi_client_sync() -> Result<()> {
     println!("Bob ID: {}", hex::encode(bob_id.as_bytes()));
     
     // Alice creates a space
-    let (space, space_op) = alice.create_space(
+    let (space, space_op, _) = alice.create_space(
         "Shared Space".to_string(),
         Some("A space for Alice and Bob".to_string()),
     ).await?;
@@ -262,7 +262,7 @@ async fn test_concurrent_operations() -> Result<()> {
     let bob = create_test_client(bob_name).await?;
     
     // Alice creates a space
-    let (space, space_op) = alice.create_space(
+    let (space, space_op, _) = alice.create_space(
         "Concurrent Test".to_string(),
         None,
     ).await?;
@@ -347,7 +347,7 @@ async fn test_crdt_commutativity() -> Result<()> {
     let client2 = create_test_client(client2_name).await?;
     
     // Create initial state
-    let (space, space_op) = client1.create_space("Test".to_string(), None).await?;
+    let (space, space_op, _) = client1.create_space("Test".to_string(), None).await?;
     let (channel, channel_op) = client1.create_channel(space.id, "general".to_string(), None).await?;
     let (thread, thread_op) = client1.create_thread(space.id, channel.id, None, "Start".to_string()).await?;
     

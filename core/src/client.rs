@@ -193,18 +193,24 @@ impl Client {
         &self,
         name: String,
         description: Option<String>,
-    ) -> Result<(Space, CrdtOp)> {
+    ) -> Result<(Space, CrdtOp, PrivacyInfo)> {
         self.create_space_with_visibility(name, description, SpaceVisibility::default()).await
     }
 
     /// Create a new Space with specific visibility
+    /// 
+    /// Privacy Warning: This function returns privacy information that MUST be shown to the user
+    /// before the space is created, especially for Public spaces which expose IP addresses.
     pub async fn create_space_with_visibility(
         &self,
         name: String,
         description: Option<String>,
         visibility: SpaceVisibility,
-    ) -> Result<(Space, CrdtOp)> {
+    ) -> Result<(Space, CrdtOp, PrivacyInfo)> {
         let space_id = SpaceId(uuid::Uuid::new_v4());
+        
+        // Generate privacy information for user consent
+        let privacy_info = PrivacyInfo::from_visibility(visibility);
         
         let mut manager = self.space_manager.write().await;
         let op = manager.create_space_with_visibility(
@@ -227,7 +233,12 @@ impl Client {
             .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?
             .clone();
         
-        Ok((space, op))
+        Ok((space, op, privacy_info))
+    }
+
+    /// Get privacy information for joining a space (to show before join)
+    pub fn get_join_privacy_info(&self, visibility: SpaceVisibility) -> PrivacyInfo {
+        PrivacyInfo::from_visibility(visibility)
     }
 
     /// Update a Space's visibility (admins only)
@@ -251,6 +262,89 @@ impl Client {
         self.broadcast_op(&op).await?;
         
         Ok(op)
+    }
+    
+    /// Create an invite for a space
+    pub async fn create_invite(
+        &self,
+        space_id: SpaceId,
+        max_uses: Option<u32>,
+        max_age_hours: Option<u32>,
+    ) -> Result<CrdtOp> {
+        let mut manager = self.space_manager.write().await;
+        let op = manager.create_invite(
+            space_id,
+            self.user_id,
+            &self.keypair,
+            max_uses,
+            max_age_hours,
+        )?;
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        Ok(op)
+    }
+    
+    /// Revoke an invite
+    pub async fn revoke_invite(
+        &self,
+        space_id: SpaceId,
+        invite_id: InviteId,
+    ) -> Result<CrdtOp> {
+        let mut manager = self.space_manager.write().await;
+        let op = manager.revoke_invite(
+            space_id,
+            invite_id,
+            self.user_id,
+            &self.keypair,
+        )?;
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        Ok(op)
+    }
+    
+    /// Join a space using an invite code
+    pub async fn join_with_invite(
+        &self,
+        space_id: SpaceId,
+        code: String,
+    ) -> Result<CrdtOp> {
+        let mut manager = self.space_manager.write().await;
+        let op = manager.use_invite(
+            space_id,
+            code,
+            self.user_id,
+            &self.keypair,
+        )?;
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        Ok(op)
+    }
+    
+    /// List all invites for a space
+    pub async fn list_invites(&self, space_id: &SpaceId) -> Vec<Invite> {
+        let manager = self.space_manager.read().await;
+        manager.list_invites(space_id).into_iter().cloned().collect()
+    }
+    
+    /// Get a specific invite
+    pub async fn get_invite(&self, space_id: &SpaceId, invite_id: &InviteId) -> Option<Invite> {
+        let manager = self.space_manager.read().await;
+        manager.get_invite(space_id, invite_id).cloned()
     }
     
     /// Get a Space by ID
@@ -562,7 +656,7 @@ impl Client {
     }
     
     /// Handle an incoming CRDT operation
-    async fn handle_incoming_op(&self, op: CrdtOp) -> Result<()> {
+    pub async fn handle_incoming_op(&self, op: CrdtOp) -> Result<()> {
         // Store the operation
         self.store.put_op(&op)?;
         
@@ -575,6 +669,18 @@ impl Client {
             crate::crdt::OpType::UpdateSpaceVisibility(_) => {
                 let mut manager = self.space_manager.write().await;
                 manager.process_update_space_visibility(&op)?;
+            }
+            crate::crdt::OpType::CreateInvite(_) => {
+                let mut manager = self.space_manager.write().await;
+                manager.process_create_invite(&op)?;
+            }
+            crate::crdt::OpType::RevokeInvite(_) => {
+                let mut manager = self.space_manager.write().await;
+                manager.process_revoke_invite(&op)?;
+            }
+            crate::crdt::OpType::UseInvite(_) => {
+                let mut manager = self.space_manager.write().await;
+                manager.process_use_invite(&op)?;
             }
             crate::crdt::OpType::CreateChannel(_) => {
                 let mut manager = self.channel_manager.write().await;
@@ -659,7 +765,7 @@ mod tests {
         
         let client = Client::new(keypair, config).unwrap();
         
-        let (space, _op) = client.create_space(
+        let (space, _, _privacy_info) = client.create_space(
             "Test Space".to_string(),
             Some("A test space".to_string()),
         ).await.unwrap();
@@ -681,7 +787,7 @@ mod tests {
         
         let client = Client::new(keypair, config).unwrap();
         
-        let (space, _) = client.create_space("Test Space".to_string(), None).await.unwrap();
+        let (space, _, _privacy_info) = client.create_space("Test Space".to_string(), None).await.unwrap();
         
         let (channel, _) = client.create_channel(
             space.id,
@@ -706,7 +812,7 @@ mod tests {
         
         let client = Client::new(keypair, config).unwrap();
         
-        let (space, _) = client.create_space("Test Space".to_string(), None).await.unwrap();
+        let (space, _, _privacy_info) = client.create_space("Test Space".to_string(), None).await.unwrap();
         let (channel, _) = client.create_channel(space.id, "general".to_string(), None).await.unwrap();
         
         let (thread, _) = client.create_thread(

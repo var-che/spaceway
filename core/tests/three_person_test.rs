@@ -38,7 +38,7 @@ async fn test_three_person_interaction() -> Result<()> {
     sleep(Duration::from_millis(500)).await;
 
     // Alice creates a space
-    let (alice_space, space_op) = alice.create_space(
+    let (alice_space, space_op, _) = alice.create_space(
         "Test Community".to_string(),
         Some("A test community for three people".to_string())
     ).await?;

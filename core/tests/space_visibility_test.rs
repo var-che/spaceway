@@ -18,7 +18,7 @@ fn create_test_client(name: &str) -> Result<Client> {
 #[tokio::test]
 async fn test_create_space_with_public_visibility() -> Result<()> {
     let client = create_test_client("test_public_visibility")?;
-    let (space, _op) = client.create_space_with_visibility(
+    let (space, _op, _) = client.create_space_with_visibility(
         "Public Space".to_string(),
         Some("Test description".to_string()),
         SpaceVisibility::Public
@@ -35,7 +35,7 @@ async fn test_create_space_with_public_visibility() -> Result<()> {
 #[tokio::test]
 async fn test_create_space_with_private_visibility() -> Result<()> {
     let client = create_test_client("test_private_visibility")?;
-    let (space, _op) = client.create_space_with_visibility(
+    let (space, _op, _) = client.create_space_with_visibility(
         "Private Space".to_string(),
         Some("Test description".to_string()),
         SpaceVisibility::Private
@@ -52,7 +52,7 @@ async fn test_create_space_with_private_visibility() -> Result<()> {
 #[tokio::test]
 async fn test_create_space_with_hidden_visibility() -> Result<()> {
     let client = create_test_client("test_hidden_visibility")?;
-    let (space, _op) = client.create_space_with_visibility(
+    let (space, _op, _) = client.create_space_with_visibility(
         "Hidden Space".to_string(),
         Some("Test description".to_string()),
         SpaceVisibility::Hidden
@@ -70,7 +70,7 @@ async fn test_create_space_with_hidden_visibility() -> Result<()> {
 async fn test_default_space_visibility() -> Result<()> {
     let client = create_test_client("test_default_visibility")?;
     // Using the original create_space method should default to Private
-    let (space, _op) = client.create_space(
+    let (space, _op, _) = client.create_space(
         "Default Space".to_string(),
         Some("Test description".to_string()),
     ).await?;
@@ -84,7 +84,7 @@ async fn test_default_space_visibility() -> Result<()> {
 #[tokio::test]
 async fn test_update_visibility() -> Result<()> {
     let admin = create_test_client("test_update_visibility")?;
-    let (space, _space_op) = admin.create_space_with_visibility(
+    let (space, _space_op, _) = admin.create_space_with_visibility(
         "Test Space".to_string(),
         Some("Test description".to_string()),
         SpaceVisibility::Private

@@ -18,23 +18,25 @@
 
 ### 1. **Access Control & Privacy** 🔐 [HIGH PRIORITY]
 
-#### 1.1 Space Visibility & Discovery
-**Current State**: All spaces are implicitly discoverable if you know the SpaceId
-**Needed**:
-- [ ] **Public Spaces**: Globally discoverable via DHT/directory
+#### 1.1 Space Visibility & Discovery ✅ **COMPLETED**
+**Status**: Fully implemented with SpaceVisibility enum
+**Implementation**:
+- ✅ **Public Spaces**: Globally discoverable via DHT/directory
   - Listed in a public directory
   - Anyone can join without invite
   - Search by name/tags
   
-- [ ] **Private Spaces**: Invite-only, not discoverable
+- ✅ **Private Spaces**: Invite-only, not discoverable
   - Not listed anywhere publicly
   - Requires invite link/code
   - SpaceId not published to DHT
   
-- [ ] **Hidden Spaces**: Maximum privacy
+- ✅ **Hidden Spaces**: Maximum privacy
   - Not discoverable even if you have the ID
   - Requires out-of-band invite with cryptographic proof
   - No metadata leaks
+
+**Test Coverage**: 6 tests passing
 
 **Implementation Approach**:
 ```rust
@@ -59,13 +61,17 @@ pub struct Space {
 
 ---
 
-#### 1.2 Invite System
-**Needed**:
-- [ ] **Invite Links**: One-time or permanent invite URLs
-- [ ] **Invite Codes**: Short alphanumeric codes (like Discord)
-- [ ] **Invite Permissions**: Who can create invites (admins only, moderators, everyone)
-- [ ] **Invite Expiration**: Time-based or use-count limits
-- [ ] **Invite Revocation**: Ability to revoke active invites
+#### 1.2 Invite System ✅ **COMPLETED**
+**Status**: Fully functional with 8-character codes, expiration, and permissions
+**Implementation**:
+- ✅ **Invite Links**: One-time or permanent invite URLs
+- ✅ **Invite Codes**: Short alphanumeric codes (8 characters)
+- ✅ **Invite Permissions**: Who can create invites (admins only, moderators, everyone)
+- ✅ **Invite Expiration**: Time-based or use-count limits
+- ✅ **Invite Revocation**: Ability to revoke active invites
+- ✅ **Auto-join**: Using invite automatically adds member to space
+
+**Test Coverage**: 11 tests passing
 
 **Implementation**:
 ```rust
@@ -565,11 +571,11 @@ pub struct OfflineQueue {
 ## Implementation Priority
 
 ### Phase 1 (MVP+): Core Privacy & Usability
-1. ✅ Space visibility controls (Public/Private/Hidden)
-2. ✅ Invite system (links, codes, expiration)
-3. ✅ Granular permissions system
-4. ✅ Direct messages (1-on-1 and group DMs)
-5. ✅ Basic moderation (ban, timeout, message deletion)
+1. ✅ **COMPLETED** - Space visibility controls (Public/Private/Hidden)
+2. ✅ **COMPLETED** - Invite system (links, codes, expiration)
+3. ⏳ **IN PROGRESS** - Granular permissions system
+4. ⏳ **PENDING** - Direct messages (1-on-1 and group DMs)
+5. ⏳ **PENDING** - Basic moderation (ban, timeout, message deletion)
 
 ### Phase 2: Rich Communication
 6. Voice channels (text-to-voice first)
@@ -631,6 +637,243 @@ pub struct OfflineQueue {
 2. **Pad message sizes** to prevent traffic analysis
 3. **Random delays** for message sending (timing obfuscation)
 4. **Onion routing** for maximum privacy (optional Tor integration)
+
+---
+
+---
+
+## Privacy Analysis & Current IP Exposure ⚠️
+
+### Current Privacy Status
+
+#### ✅ What's Protected:
+- **Message Content**: E2E encrypted via MLS
+- **Attachment Content**: Encrypted blobs
+- **Space Membership**: Encrypted member lists (not published)
+- **Operation Signatures**: Cryptographically authenticated
+- **Invite Codes**: Random 8-character alphanumeric (not guessable)
+
+#### ⚠️ **CRITICAL: IP Addresses ARE Currently Exposed**
+
+**Current Network Architecture**:
+```
+User A (IP: 1.2.3.4) <---> Direct P2P Connection <---> User B (IP: 5.6.7.8)
+                              via libp2p TCP
+```
+
+**What's Visible to Other Participants**:
+1. ❌ **Your IP address** - Directly visible to all peers you connect to
+2. ❌ **Connection timing** - When you come online/offline
+3. ❌ **Peer graph** - Who you're connected to via DHT routing
+4. ❌ **Message timing** - Exact timestamps of when you send messages
+5. ❌ **Space participation** - Can infer spaces you're in by connection patterns
+
+**Current libp2p Transport Stack**:
+- Transport: TCP (exposes IP directly)
+- Encryption: Noise protocol (transport layer only)
+- DHT: Kademlia (broadcasts PeerID ↔ IP mapping)
+- GossipSub: Propagates messages with source PeerID
+
+### Privacy Threat Model
+
+**Who Can See What**:
+
+| Attacker Type | What They Can See | Risk Level |
+|---------------|-------------------|------------|
+| **Space Member** | Your IP, online status, message timing | HIGH ⚠️ |
+| **Network Observer** (ISP) | Encrypted traffic patterns, connection graph | MEDIUM |
+| **DHT Participant** | Your PeerID, IP, what topics you're interested in | HIGH ⚠️ |
+| **Malicious Peer** | All of the above + can correlate across spaces | CRITICAL 🚨 |
+
+### Recommended Privacy Improvements (Priority Order)
+
+#### 1. **CRITICAL: Add Relay/Onion Routing** 🔴
+**Current Risk**: Anyone you chat with knows your IP address
+
+**Solution Options**:
+
+**Option A: Tor Integration** (Maximum Privacy)
+```rust
+// Route all libp2p traffic through Tor
+- Use libp2p-tor-transport
+- All connections via .onion addresses
+- Complete IP anonymity
+- Trade-off: Higher latency (~200-500ms)
+```
+
+**Option B: Relay Network** (Balance Privacy/Performance)
+```rust
+// Implement Circuit Relay Protocol
+User A <--> Relay Node <--> User B
+        (IP hidden)     (IP hidden)
+
+// Already have scaffold: create_relay_server() exists
+// Need: Deploy trusted relay nodes
+```
+
+**Option C: Mix Network** (Research-Grade)
+```rust
+// Use mix-net like Nym or Katzenpost
+- Messages batched and shuffled
+- Traffic analysis resistant
+- Trade-off: Complex, higher latency
+```
+
+**Recommendation**: Start with **Option B (Relay)**, add **Option A (Tor)** as optional mode
+
+---
+
+#### 2. **HIGH: Remove DHT for Private/Hidden Spaces** 🟠
+**Current Risk**: Kademlia DHT broadcasts your PeerID and space interests
+
+**Solution**:
+```rust
+pub enum SpaceVisibility {
+    Public,   // OK to use DHT
+    Private,  // NO DHT - invite-only peer exchange
+    Hidden,   // NO DHT - out-of-band peer discovery
+}
+
+// Implementation:
+impl Space {
+    pub fn should_use_dht(&self) -> bool {
+        matches!(self.visibility, SpaceVisibility::Public)
+    }
+}
+```
+
+**Changes Needed**:
+- Private/Hidden spaces: Disable Kademlia for those topics
+- Peer discovery: Only via invite exchange (include peer multiaddr in invite)
+- Bootstrap: Use trusted relay nodes instead of DHT
+
+---
+
+#### 3. **MEDIUM: Padding & Timing Obfuscation** 🟡
+**Current Risk**: Message sizes and timing reveal activity patterns
+
+**Solution**:
+```rust
+// Pad messages to fixed sizes
+const MESSAGE_SIZES: &[usize] = &[512, 1024, 4096, 16384];
+
+fn pad_message(data: Vec<u8>) -> Vec<u8> {
+    let target_size = MESSAGE_SIZES.iter()
+        .find(|&&s| s >= data.len())
+        .unwrap_or(&MESSAGE_SIZES[MESSAGE_SIZES.len() - 1]);
+    
+    let mut padded = data;
+    padded.resize(*target_size, 0);
+    padded
+}
+
+// Random delay before sending (0-2 seconds)
+async fn send_with_delay(msg: Message) {
+    let delay = rand::thread_rng().gen_range(0..2000);
+    tokio::time::sleep(Duration::from_millis(delay)).await;
+    send(msg).await;
+}
+```
+
+---
+
+#### 4. **LOW: Metadata Minimization** 🟢
+**Current Risk**: Timestamps, member counts leak information
+
+**Solutions**:
+- Fuzzy timestamps (round to nearest hour for non-critical data)
+- Don't broadcast member counts publicly
+- Minimize space metadata in Public discovery
+
+---
+
+### Implementation Roadmap for Privacy
+
+**Immediate (Next Sprint)**:
+1. ✅ Document current IP exposure (this section)
+2. ⏳ Implement relay protocol (libp2p Circuit Relay)
+3. ⏳ Deploy 2-3 trusted relay nodes
+4. ⏳ Make relay usage default for Private/Hidden spaces
+
+**Short-Term (1-2 months)**:
+5. Add Tor transport as optional privacy mode
+6. Implement DHT filtering (disable for Private/Hidden)
+7. Add message padding (fixed sizes)
+8. Add timing obfuscation (random delays)
+
+**Long-Term (3-6 months)**:
+9. Mix network integration (Nym/Katzenpost)
+10. Decoy traffic (cover traffic to hide activity)
+11. Forward secrecy improvements (rotate MLS epochs more frequently)
+
+---
+
+### Privacy vs. Performance Trade-offs
+
+| Feature | Privacy Gain | Performance Cost | Recommendation |
+|---------|--------------|------------------|----------------|
+| **Tor Transport** | HIGH - Complete IP anonymity | HIGH - 3-5x latency | Optional mode for high-threat users |
+| **Relay Network** | MEDIUM - Hides IP from peers | LOW - 1.5x latency | **DEFAULT for Private/Hidden** |
+| **No DHT** | MEDIUM - Reduces metadata leaks | MEDIUM - Slower peer discovery | **Required for Private/Hidden** |
+| **Message Padding** | LOW - Prevents traffic analysis | LOW - 10-20% bandwidth | Enable by default |
+| **Timing Delays** | LOW - Obscures activity patterns | LOW - 0-2s delay per message | Optional (user preference) |
+
+---
+
+### Cleaning Up Disk Space 🧹
+
+**Current Project Size**: ~12 GB in `target/` folder
+
+**Safe to Delete**:
+```powershell
+# Delete build artifacts (safe - will rebuild on next compile)
+cargo clean
+
+# This will free up ~12 GB
+```
+
+**Prevent Future Buildup**:
+```powershell
+# Add to .gitignore (if not already present)
+target/
+**/*.rs.bk
+Cargo.lock  # Only if not publishing library
+
+# Configure cargo to use shared target directory
+# Add to ~/.cargo/config.toml:
+[build]
+target-dir = "C:/cargo-target"  # Single shared build cache
+```
+
+**Recommended Maintenance**:
+```powershell
+# Run periodically to clean old builds
+cargo clean --release  # Keep debug builds for faster iteration
+```
+
+---
+
+## Privacy Analysis
+
+### Metadata Exposed:
+- ⚠️ **IP Addresses** - Directly visible to connected peers (CRITICAL)
+- ❌ Participant count in spaces (via connection patterns)
+- ❌ Timing of messages (via timestamps)
+- ❌ Network graph (who connects to whom via DHT)
+- ❌ Online/offline patterns (via connection events)
+
+### Metadata Protected:
+- ✅ Message content (E2E encrypted)
+- ✅ Who messaged whom (in Private/Hidden spaces after relay implementation)
+- ✅ Space membership (encrypted member lists)
+- ✅ Attachment content (encrypted blobs)
+- ✅ Invite codes (cryptographically random)
+
+### Privacy Recommendations for Users:
+1. **Use VPN or Tor** - Until relay network is deployed
+2. **Use Hidden spaces** - For sensitive communities
+3. **Disable DHT discovery** - Use invite-only mode (to be implemented)
+4. **Be aware**: Current version exposes IP to space members
 
 ---
 

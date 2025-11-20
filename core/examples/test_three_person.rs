@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
                     Some("space") if parts.len() >= 3 => {
                         let name = parts[2..].join(" ");
                         match client.create_space(name.clone(), None).await {
-                            Ok((space, _)) => {
+                            Ok((space, _, _)) => {
                                 current_space = Some(space.id);
                                 println!("✅ Created space: {} (ID: {})", name, hex::encode(space.id.0.as_bytes()));
                             }

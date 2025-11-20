@@ -508,17 +508,28 @@ impl Client {
             return Ok(space);
         }
         
-        // Store the space locally (we'll sync CRDT ops later)
-        // For now, just add it to the manager's internal state
-        // TODO: In Phase 3, we'll fetch and apply CRDT ops from DHT
+        // Fetch CRDT operations from DHT
+        drop(manager); // Release lock for async operation
+        let ops = self.dht_get_operations(&space_id).await?;
         
         println!("✓ Joined Space from DHT: {}", space.name);
         println!("  Space ID: {}", space_id);
         println!("  Owner: {}", space.owner);
         println!("  Members: {}", space.members.len());
+        println!("  Operations fetched: {}", ops.len());
+        
+        // Apply operations to rebuild state
+        if !ops.is_empty() {
+            for op in ops {
+                // Apply each operation (this rebuilds channels, threads, messages, etc.)
+                if let Err(e) = self.handle_incoming_op(op).await {
+                    eprintln!("⚠ Failed to apply operation: {}", e);
+                }
+            }
+            println!("✓ Applied operations to rebuild Space state");
+        }
         
         // Subscribe to space topic for future updates
-        drop(manager);
         self.subscribe_to_space(&space_id).await?;
         
         Ok(space)
@@ -612,6 +623,113 @@ impl Client {
         println!("✓ Retrieved Space from DHT: {}", space.name);
         
         Ok(space)
+    }
+    
+    /// Store CRDT operations in the DHT
+    /// 
+    /// Batches operations and stores them encrypted for later retrieval.
+    /// This enables offline message history sync.
+    pub async fn dht_put_operations(
+        &self,
+        space_id: &SpaceId,
+        ops: Vec<CrdtOp>,
+    ) -> Result<()> {
+        use crate::crdt::{OperationBatch, EncryptedOperationBatch, OperationBatchIndex};
+        
+        if ops.is_empty() {
+            return Ok(());
+        }
+        
+        // First, fetch or create the index
+        let mut network = self.network.write().await;
+        let index_key = OperationBatchIndex::compute_dht_key(space_id);
+        
+        let mut index = match network.dht_get(index_key.clone()).await {
+            Ok(values) if !values.is_empty() => {
+                OperationBatchIndex::from_bytes(&values[0])?
+            }
+            _ => {
+                // Create new index
+                OperationBatchIndex::new(*space_id)
+            }
+        };
+        
+        // Get next sequence number
+        let sequence = index.batch_sequences.last().copied().unwrap_or(0) + 1;
+        
+        // Create operation batch
+        let batch = OperationBatch::new(*space_id, ops.clone(), sequence);
+        
+        // Encrypt batch
+        let encrypted = EncryptedOperationBatch::encrypt(&batch)?;
+        
+        // Store batch in DHT
+        let batch_key = encrypted.dht_key();
+        let batch_bytes = encrypted.to_bytes()?;
+        network.dht_put(batch_key, batch_bytes).await?;
+        
+        // Update index
+        index.add_batch(sequence, ops.len() as u32);
+        
+        // Store updated index
+        let index_bytes = index.to_bytes()?;
+        network.dht_put(index_key, index_bytes).await?;
+        
+        println!("✓ Stored {} operations in DHT (batch {})", ops.len(), sequence);
+        
+        Ok(())
+    }
+    
+    /// Retrieve CRDT operations from the DHT
+    /// 
+    /// Fetches all operation batches for a Space and returns them in order.
+    pub async fn dht_get_operations(&self, space_id: &SpaceId) -> Result<Vec<CrdtOp>> {
+        use crate::crdt::{EncryptedOperationBatch, OperationBatchIndex};
+        
+        // Fetch index
+        let mut network = self.network.write().await;
+        let index_key = OperationBatchIndex::compute_dht_key(space_id);
+        
+        let index = match network.dht_get(index_key).await {
+            Ok(values) if !values.is_empty() => {
+                OperationBatchIndex::from_bytes(&values[0])?
+            }
+            _ => {
+                // No operations stored yet
+                return Ok(Vec::new());
+            }
+        };
+        
+        // Fetch all batches
+        let mut all_ops = Vec::new();
+        
+        for sequence in &index.batch_sequences {
+            // Compute batch key
+            let batch_key = EncryptedOperationBatch::compute_dht_key(space_id, *sequence);
+            
+            // Fetch batch
+            match network.dht_get(batch_key).await {
+                Ok(values) if !values.is_empty() => {
+                    let encrypted = EncryptedOperationBatch::from_bytes(&values[0])?;
+                    let batch = encrypted.decrypt()?;
+                    
+                    // Verify Space ID matches
+                    if batch.space_id != *space_id {
+                        return Err(Error::InvalidOperation("Space ID mismatch in batch".to_string()));
+                    }
+                    
+                    all_ops.extend(batch.operations);
+                }
+                _ => {
+                    // Batch not found, skip (might be still propagating)
+                    println!("⚠ Batch {} not found in DHT", sequence);
+                }
+            }
+        }
+        
+        println!("✓ Retrieved {} operations from DHT", all_ops.len());
+        
+        Ok(all_ops)
     }
     
     /// Get a specific invite
@@ -956,7 +1074,20 @@ impl Client {
     /// Broadcast a CRDT operation to the network
     async fn broadcast_op(&self, op: &CrdtOp) -> Result<()> {
         let topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
-        self.broadcast_op_on_topic(op, &topic).await
+        
+        // Broadcast via GossipSub
+        self.broadcast_op_on_topic(op, &topic).await?;
+        
+        // Store in DHT for offline sync
+        // Note: We store each operation individually for now
+        // TODO: Batch operations for efficiency
+        let result = self.dht_put_operations(&op.space_id, vec![op.clone()]).await;
+        if let Err(e) = result {
+            // Don't fail if DHT storage fails (degraded mode)
+            eprintln!("⚠ Failed to store operation in DHT: {}", e);
+        }
+        
+        Ok(())
     }
     
     /// Broadcast a CRDT operation to a specific topic

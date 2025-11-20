@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
                         match client.create_space(name.clone(), None).await {
                             Ok((space, _, _)) => {
                                 current_space = Some(space.id);
-                                println!("✅ Created space: {} (ID: {})", name, hex::encode(space.id.0.as_bytes()));
+                                println!("✅ Created space: {} (ID: {})", name, hex::encode(&space.id.0));
                             }
                             Err(e) => println!("❌ Error: {}", e),
                         }

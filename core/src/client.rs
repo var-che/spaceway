@@ -88,8 +88,8 @@ impl Client {
         // Initialize blob storage
         let storage = Arc::new(crate::storage::Storage::open(&config.storage_path)?);
         
-        // Create network
-        let (network_node, network_rx) = NetworkNode::new()?;
+        // Create network with bootstrap peers
+        let (network_node, network_rx) = NetworkNode::new_with_config(config.bootstrap_peers.clone())?;
         let network = Arc::new(RwLock::new(network_node));
         let network_rx = Arc::new(RwLock::new(network_rx));
         
@@ -112,12 +112,19 @@ impl Client {
     
     /// Start the client (network and event processing)
     pub async fn start(&self) -> Result<()> {
+        // Subscribe to space discovery topic
+        {
+            let mut network = self.network.write().await;
+            let _ = network.subscribe("descord/space-discovery").await;
+        }
+        
         // Spawn event processing task
         let space_manager = Arc::clone(&self.space_manager);
         let channel_manager = Arc::clone(&self.channel_manager);
         let thread_manager = Arc::clone(&self.thread_manager);
         let store = Arc::clone(&self.store);
         let network_rx = Arc::clone(&self.network_rx);
+        let network = Arc::clone(&self.network);
         
         tokio::spawn(async move {
             loop {
@@ -128,17 +135,38 @@ impl Client {
                 
                 if let Some(event) = event_opt {
                     match event {
-                        NetworkEvent::MessageReceived { topic: _, data, source: _ } => {
-                            // Decode CRDT operation
+                        NetworkEvent::MessageReceived { topic, data, source: _ } => {
+                            // Decode CRDT operation (works for both space topics and discovery)
                             if let Ok(op) = minicbor::decode::<CrdtOp>(&data) {
+                                // If this is a CreateSpace on discovery topic, auto-subscribe to the space
+                                if topic == "descord/space-discovery" {
+                                    if let crate::crdt::OpType::CreateSpace(payload) = &op.op_type {
+                                        if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
+                                            println!("📢 Discovered space: {} (space_{})", name, ::hex::encode(&op.space_id.0[..4]));
+                                            
+                                            // Auto-subscribe to the space topic
+                                            let space_topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
+                                            let mut net = network.write().await;
+                                            if let Ok(_) = net.subscribe(&space_topic).await {
+                                                println!("  → Auto-subscribed to {}", space_topic);
+                                            }
+                                            drop(net);
+                                        }
+                                    }
+                                }
+                                
                                 // Store the operation
                                 let _ = store.put_op(&op);
                                 
                                 // Process based on operation type
                                 match &op.op_type {
-                                    crate::crdt::OpType::CreateSpace(_) => {
-                                        let mut manager = space_manager.write().await;
-                                        let _ = manager.process_create_space(&op);
+                                    crate::crdt::OpType::CreateSpace(payload) => {
+                                        if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
+                                            let mut manager = space_manager.write().await;
+                                            let _ = manager.process_create_space(&op);
+                                            
+                                            println!("✓ Processed CreateSpace: {} ({})", name, op.space_id);
+                                        }
                                     }
                                     crate::crdt::OpType::UpdateSpaceVisibility(_) => {
                                         let mut manager = space_manager.write().await;
@@ -166,6 +194,7 @@ impl Client {
                         }
                         NetworkEvent::PeerConnected(peer_id) => {
                             println!("Peer connected: {}", peer_id);
+                            // Note: Space discovery subscription happens in start() before event loop
                         }
                         NetworkEvent::PeerDisconnected(peer_id) => {
                             println!("Peer disconnected: {}", peer_id);
@@ -218,6 +247,9 @@ impl Client {
         // Generate privacy information for user consent
         let privacy_info = PrivacyInfo::from_visibility(visibility);
         
+        // Clone name before passing to manager (which consumes it)
+        let name_for_announcement = name.clone();
+        
         let mut manager = self.space_manager.write().await;
         let op = manager.create_space_with_visibility(
             space_id,
@@ -232,8 +264,15 @@ impl Client {
         // Store operation
         self.store.put_op(&op)?;
         
-        // Broadcast operation
+        // Broadcast operation on space topic
         self.broadcast_op(&op).await?;
+        
+        // Auto-subscribe to the space topic
+        self.subscribe_to_space(&space_id).await?;
+        
+        // ALSO broadcast CreateSpace on discovery topic so peers can discover and join
+        // This allows peers who aren't subscribed to the space yet to receive the initial CreateSpace op
+        let _ = self.broadcast_op_on_topic(&op, "descord/space-discovery").await;
         
         let space = manager.get_space(&space_id)
             .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?
@@ -689,6 +728,11 @@ impl Client {
     /// Broadcast a CRDT operation to the network
     async fn broadcast_op(&self, op: &CrdtOp) -> Result<()> {
         let topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
+        self.broadcast_op_on_topic(op, &topic).await
+    }
+    
+    /// Broadcast a CRDT operation to a specific topic
+    async fn broadcast_op_on_topic(&self, op: &CrdtOp, topic: &str) -> Result<()> {
         let data = minicbor::to_vec(op)
             .map_err(|e| Error::Serialization(format!("Failed to encode operation: {}", e)))?;
         
@@ -696,7 +740,7 @@ impl Client {
         
         // Attempt to publish, but don't fail if no peers are connected
         // This is expected in single-node scenarios and tests
-        let _ = network.publish(&topic, data).await;
+        let _ = network.publish(topic, data).await;
         
         Ok(())
     }
@@ -708,6 +752,24 @@ impl Client {
         network.subscribe(&topic).await?;
         
         Ok(())
+    }
+    
+    /// Get network peer ID
+    pub async fn peer_id(&self) -> libp2p::PeerId {
+        let network = self.network.read().await;
+        *network.local_peer_id()
+    }
+    
+    /// Get listening addresses
+    pub async fn listening_addrs(&self) -> Vec<libp2p::Multiaddr> {
+        let network = self.network.read().await;
+        network.listeners().await
+    }
+    
+    /// Dial a peer directly
+    pub async fn dial(&self, addr: libp2p::Multiaddr) -> Result<()> {
+        let mut network = self.network.write().await;
+        network.dial(addr).await
     }
     
     /// Process incoming network events

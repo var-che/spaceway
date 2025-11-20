@@ -120,8 +120,13 @@ struct NetworkWorker {
 }
 
 impl NetworkNode {
-    /// Create a new network node
+    /// Create a new network node with command/event channels
     pub fn new() -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
+        Self::new_with_config(vec![])
+    }
+    
+    /// Create a new network node with bootstrap peers
+    pub fn new_with_config(bootstrap_peers: Vec<String>) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
         // Generate identity
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
@@ -185,11 +190,31 @@ impl NetworkNode {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         
         // Create worker
-        let worker = NetworkWorker {
+        let mut worker = NetworkWorker {
             swarm,
             event_tx: user_event_tx,
             command_rx,
         };
+        
+        // Bootstrap DHT with provided peers
+        if !bootstrap_peers.is_empty() {
+            for peer_addr in &bootstrap_peers {
+                if let Ok(addr) = peer_addr.parse::<Multiaddr>() {
+                    // Extract peer ID from multiaddr if present
+                    if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
+                        worker.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                        println!("Added bootstrap peer: {} at {}", peer_id, addr);
+                    }
+                }
+            }
+            
+            // Start DHT bootstrap
+            if let Err(e) = worker.swarm.behaviour_mut().kademlia.bootstrap() {
+                println!("Warning: DHT bootstrap failed: {:?}", e);
+            } else {
+                println!("✓ DHT bootstrap initiated with {} peers", bootstrap_peers.len());
+            }
+        }
         
         // Spawn network thread
         thread::spawn(move || {

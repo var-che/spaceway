@@ -10,8 +10,8 @@
 //! 7. Bob receives and syncs messages via CRDT
 //! 8. Verify neither knows the other's IP address
 
-use descord_core::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
 use std::time::Duration;
 use tokio::time::sleep;
 use tempfile::TempDir;

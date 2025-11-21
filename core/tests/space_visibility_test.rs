@@ -1,5 +1,5 @@
-use descord_core::{Client, ClientConfig, crypto::Keypair};
-use descord_core::types::SpaceVisibility;
+use spaceway_core::{Client, ClientConfig, crypto::Keypair};
+use spaceway_core::types::SpaceVisibility;
 use anyhow::Result;
 
 /// Helper to create a test client

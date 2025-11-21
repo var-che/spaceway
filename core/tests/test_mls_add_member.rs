@@ -11,9 +11,9 @@
 //! 8. Bob processes Welcome and joins group
 //! 9. Both can encrypt/decrypt messages
 
-use descord_core::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
-use descord_core::types::{UserId, Role};
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
+use spaceway_core::types::{UserId, Role};
 use std::time::Duration;
 use tokio::time::sleep;
 use anyhow::Result;

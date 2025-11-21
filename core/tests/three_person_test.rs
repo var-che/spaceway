@@ -1,4 +1,4 @@
-use descord_core::{Client, ClientConfig, crypto::signing::Keypair};
+use spaceway_core::{Client, ClientConfig, crypto::signing::Keypair};
 use tokio::time::{sleep, Duration};
 use anyhow::Result;
 

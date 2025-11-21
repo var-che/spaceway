@@ -1,4 +1,4 @@
-use descord_core::{Permissions, Role, PermissionResult};
+use spaceway_core::{Permissions, Role, PermissionResult};
 use anyhow::Result;
 
 /// Test basic role-based permissions

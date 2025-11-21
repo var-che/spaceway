@@ -7,7 +7,7 @@
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
-use descord_core::{Client, ClientConfig};
+use spaceway_core::{Client, ClientConfig};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
 
     // Print banner with version
     println!("{}", "=".repeat(60).bright_blue());
-    println!("{}", format!("  {}", descord_core::version_string()).bright_cyan().bold());
+    println!("{}", format!("  {}", spaceway_core::version_string()).bright_cyan().bold());
     println!("{}", "  Privacy-First Decentralized Communication".bright_white());
     println!("{}", "=".repeat(60).bright_blue());
     println!();

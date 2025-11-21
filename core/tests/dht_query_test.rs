@@ -3,12 +3,12 @@
 //! Tests that DHT PUT and GET operations properly track queries,
 //! wait for results, and handle timeouts.
 
-use descord_core::network::node::NetworkNode;
+use spaceway_core::network::node::NetworkNode;
 use std::time::Duration;
 use tokio::time::sleep;
 
 #[tokio::test]
-#[ignore] // Integration test - run with: cargo test --package descord-core --test dht_query_test -- --ignored --nocapture
+#[ignore] // Integration test - run with: cargo test --package spaceway-core --test dht_query_test -- --ignored --nocapture
 async fn test_dht_put_and_get() {
     println!("\n╔════════════════════════════════════════════════════════╗");
     println!("║    DHT PUT/GET INTEGRATION TEST                       ║");

@@ -1,5 +1,5 @@
-use descord_core::{Client, ClientConfig, crypto::Keypair, network::create_relay_server};
-use descord_core::types::SpaceVisibility;
+use spaceway_core::{Client, ClientConfig, crypto::Keypair, network::create_relay_server};
+use spaceway_core::types::SpaceVisibility;
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
 use libp2p::swarm::SwarmEvent;
@@ -138,7 +138,7 @@ async fn test_relay_hides_ip_addresses() -> Result<()> {
     ).await?;
     
     // Verify relay is required
-    assert_eq!(privacy_info.transport_mode, descord_core::types::NetworkTransportMode::Relay);
+    assert_eq!(privacy_info.transport_mode, spaceway_core::types::NetworkTransportMode::Relay);
     
     // 5. TODO: Alice and Bob connect via relay
     // - Alice reserves slot on relay
@@ -154,7 +154,7 @@ async fn test_relay_hides_ip_addresses() -> Result<()> {
 /// Test: Relay server enforces bandwidth limits
 #[tokio::test]
 async fn test_relay_bandwidth_limits() -> Result<()> {
-    use descord_core::network::relay::RelayConfig;
+    use spaceway_core::network::relay::RelayConfig;
     
     let config = RelayConfig {
         max_reservations_per_peer: 2,

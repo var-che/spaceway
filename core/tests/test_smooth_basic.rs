@@ -1,6 +1,6 @@
 //! Basic SmoothTest framework tests with debug output and timeouts
 
-use descord_core::smoothtest::*;
+use spaceway_core::smoothtest::*;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread")]

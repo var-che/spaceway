@@ -7,7 +7,7 @@
 //! 4. Bob should see Alice's messages
 //! 5. Both can exchange messages
 
-use descord_core::{Client, ClientConfig};
+use spaceway_core::{Client, ClientConfig};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -22,7 +22,7 @@ async fn test_two_users_gossipsub_sync() {
 
     // Step 1: Create Alice (listening on port 9876)
     println!("📝 Step 1: Alice creates account and starts listening...");
-    let alice_keypair = descord_core::crypto::signing::Keypair::generate();
+    let alice_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let alice_config = ClientConfig {
         storage_path: PathBuf::from("test-alice-data"),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/9876".to_string()],
@@ -92,7 +92,7 @@ async fn test_two_users_gossipsub_sync() {
 
     // Step 4: Create Bob
     println!("\n📝 Step 4: Bob creates account and starts...");
-    let bob_keypair = descord_core::crypto::signing::Keypair::generate();
+    let bob_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let bob_config = ClientConfig {
         storage_path: PathBuf::from("test-bob-data"),
         listen_addrs: vec![],

@@ -14,7 +14,7 @@
 /// - Malicious clients can ignore deletion markers
 /// - This is a fundamental trade-off of decentralized architecture
 
-use descord_core::{
+use spaceway_core::{
     Role,
     mls::{MlsGroup, MlsGroupConfig, provider::create_provider},
     types::{SpaceId, UserId, MessageId},

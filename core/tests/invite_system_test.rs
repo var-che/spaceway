@@ -1,5 +1,5 @@
-use descord_core::{Client, ClientConfig, crypto::Keypair};
-use descord_core::types::{SpaceVisibility, InviteCreatorRole, InvitePermissions};
+use spaceway_core::{Client, ClientConfig, crypto::Keypair};
+use spaceway_core::types::{SpaceVisibility, InviteCreatorRole, InvitePermissions};
 use anyhow::Result;
 
 /// Helper to create a test client
@@ -250,7 +250,7 @@ async fn test_multiple_invites() -> Result<()> {
 
 #[tokio::test]
 async fn test_invite_validation() -> Result<()> {
-    use descord_core::types::Invite;
+    use spaceway_core::types::Invite;
     use uuid::Uuid;
     
     let current_time = std::time::SystemTime::now()
@@ -260,13 +260,13 @@ async fn test_invite_validation() -> Result<()> {
     
     // Valid invite
     let invite = Invite {
-        id: descord_core::types::InviteId(Uuid::new_v4()),
+        id: spaceway_core::types::InviteId(Uuid::new_v4()),
         space_id: {
             let mut bytes = [0u8; 32];
             bytes[0] = 1; // Make it non-zero
-            descord_core::types::SpaceId(bytes)
+            spaceway_core::types::SpaceId(bytes)
         },
-        creator: descord_core::types::UserId([0u8; 32]),
+        creator: spaceway_core::types::UserId([0u8; 32]),
         code: "TEST1234".to_string(),
         max_uses: Some(5),
         expires_at: Some(current_time + 3600),
@@ -297,7 +297,7 @@ async fn test_invite_validation() -> Result<()> {
 
 #[tokio::test]
 async fn test_invite_permissions() -> Result<()> {
-    use descord_core::types::Role;
+    use spaceway_core::types::Role;
     
     let perms = InvitePermissions {
         who_can_invite: InviteCreatorRole::AdminOnly,
@@ -305,9 +305,9 @@ async fn test_invite_permissions() -> Result<()> {
         max_uses_default: 10,
     };
     
-    assert!(descord_core::types::Invite::can_create(Role::Admin, &perms));
-    assert!(!descord_core::types::Invite::can_create(Role::Moderator, &perms));
-    assert!(!descord_core::types::Invite::can_create(Role::Member, &perms));
+    assert!(spaceway_core::types::Invite::can_create(Role::Admin, &perms));
+    assert!(!spaceway_core::types::Invite::can_create(Role::Moderator, &perms));
+    assert!(!spaceway_core::types::Invite::can_create(Role::Member, &perms));
     
     let perms2 = InvitePermissions {
         who_can_invite: InviteCreatorRole::AdminAndModerator,
@@ -315,9 +315,9 @@ async fn test_invite_permissions() -> Result<()> {
         max_uses_default: 5,
     };
     
-    assert!(descord_core::types::Invite::can_create(Role::Admin, &perms2));
-    assert!(descord_core::types::Invite::can_create(Role::Moderator, &perms2));
-    assert!(!descord_core::types::Invite::can_create(Role::Member, &perms2));
+    assert!(spaceway_core::types::Invite::can_create(Role::Admin, &perms2));
+    assert!(spaceway_core::types::Invite::can_create(Role::Moderator, &perms2));
+    assert!(!spaceway_core::types::Invite::can_create(Role::Member, &perms2));
     
     let perms3 = InvitePermissions {
         who_can_invite: InviteCreatorRole::Everyone,
@@ -325,9 +325,9 @@ async fn test_invite_permissions() -> Result<()> {
         max_uses_default: 1,
     };
     
-    assert!(descord_core::types::Invite::can_create(Role::Admin, &perms3));
-    assert!(descord_core::types::Invite::can_create(Role::Moderator, &perms3));
-    assert!(descord_core::types::Invite::can_create(Role::Member, &perms3));
+    assert!(spaceway_core::types::Invite::can_create(Role::Admin, &perms3));
+    assert!(spaceway_core::types::Invite::can_create(Role::Moderator, &perms3));
+    assert!(spaceway_core::types::Invite::can_create(Role::Member, &perms3));
     
     Ok(())
 }

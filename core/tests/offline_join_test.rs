@@ -1,7 +1,7 @@
-use descord_core::client::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
-use descord_core::SpaceVisibility;
-use descord_core::crdt::{OpType, OpPayload};
+use spaceway_core::client::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
+use spaceway_core::SpaceVisibility;
+use spaceway_core::crdt::{OpType, OpPayload};
 use anyhow::Result;
 use tokio;
 use std::path::PathBuf;
@@ -121,7 +121,7 @@ async fn test_join_checks_dht_on_missing_space() -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     // Try to join a non-existent Space
-    let fake_space_id = descord_core::SpaceId::from_content(
+    let fake_space_id = spaceway_core::SpaceId::from_content(
         &client.user_id(),
         "Nonexistent",
         12345

@@ -14,8 +14,8 @@
 //! - MLS security works (kicked members can't decrypt)
 //! - CRDT state propagates correctly
 
-use descord_core::{Client, ClientConfig};
-use descord_core::types::Role;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::types::Role;
 use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
 
@@ -29,7 +29,7 @@ async fn test_kick_member_mls_security() {
 
     // Step 1: Alice creates account and Space
     println!("\n📝 Step 1: Alice creates Space and Channel");
-    let alice_keypair = descord_core::crypto::signing::Keypair::generate();
+    let alice_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let alice_config = ClientConfig {
         storage_path: PathBuf::from("test-alice-kick-data"),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/9100".to_string()],
@@ -75,7 +75,7 @@ async fn test_kick_member_mls_security() {
 
     // Step 2: Bob creates account and connects
     println!("\n📝 Step 2: Bob creates account and connects to Alice");
-    let bob_keypair = descord_core::crypto::signing::Keypair::generate();
+    let bob_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let bob_config = ClientConfig {
         storage_path: PathBuf::from("test-bob-kick-data"),
         listen_addrs: vec![],

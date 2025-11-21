@@ -1,4 +1,4 @@
-use descord_core::{Client, ClientConfig, types::SpaceId, mls::group::MlsGroup};
+use spaceway_core::{Client, ClientConfig, types::SpaceId, mls::group::MlsGroup};
 use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
 use anyhow::Result;
@@ -12,7 +12,7 @@ async fn test_kicked_member_cannot_decrypt_messages() -> Result<()> {
 
     // Step 1: Setup Alice
     println!("📝 Step 1: Creating Alice with MLS provider...");
-    let alice_keypair = descord_core::crypto::signing::Keypair::generate();
+    let alice_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let alice_config = ClientConfig {
         storage_path: PathBuf::from("test-alice-mls-security"),
         listen_addrs: vec![],
@@ -26,7 +26,7 @@ async fn test_kicked_member_cannot_decrypt_messages() -> Result<()> {
 
     // Step 2: Setup Bob
     println!("\n📝 Step 2: Creating Bob with MLS provider...");
-    let bob_keypair = descord_core::crypto::signing::Keypair::generate();
+    let bob_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let bob_config = ClientConfig {
         storage_path: PathBuf::from("test-bob-mls-security"),
         listen_addrs: vec![],

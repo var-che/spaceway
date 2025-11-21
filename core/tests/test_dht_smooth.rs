@@ -3,7 +3,7 @@
 //! These tests demonstrate the SmoothTest framework and verify basic functionality.
 //! Full DHT network tests require actual network connectivity and are slow.
 
-use descord_core::smoothtest::*;
+use spaceway_core::smoothtest::*;
 
 #[tokio::test]
 async fn test_smooth_client_batch_creation() {

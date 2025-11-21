@@ -1,7 +1,7 @@
 //! Account management - loading/creating keypairs
 
 use anyhow::{Context, Result};
-use descord_core::crypto::Keypair;
+use spaceway_core::crypto::Keypair;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};

@@ -7,7 +7,7 @@
 //! QuorumFailed (no connected peers). In production with bootstrap nodes,
 //! the DHT operations will succeed.
 
-use descord_core::{
+use spaceway_core::{
     Client, ClientConfig,
     types::*,
     crdt::OpType,

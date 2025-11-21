@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use descord_core::{Client, SpaceId, ChannelId, ThreadId};
+use spaceway_core::{Client, SpaceId, ChannelId, ThreadId};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -81,12 +81,12 @@ impl CommandHandler {
     fn cmd_version(&self) -> Result<()> {
         println!();
         println!("{}", "=".repeat(60).bright_blue());
-        println!("{}", format!("  {}", descord_core::version_string()).bright_cyan().bold());
+        println!("{}", format!("  {}", spaceway_core::version_string()).bright_cyan().bold());
         println!("{}", "  Privacy-First Decentralized Communication".bright_white());
         println!("{}", "=".repeat(60).bright_blue());
         println!();
-        println!("{} {}", "Protocol Version:".bright_green(), descord_core::PROTOCOL_VERSION);
-        println!("{} {}", "Build:".bright_green(), descord_core::version::BUILD_PROFILE);
+        println!("{} {}", "Protocol Version:".bright_green(), spaceway_core::PROTOCOL_VERSION);
+        println!("{} {}", "Build:".bright_green(), spaceway_core::version::BUILD_PROFILE);
         println!();
         println!("{}", "For more information:".bright_blue());
         println!("  GitHub: {}", "https://github.com/descord/descord".bright_cyan());
@@ -447,9 +447,9 @@ impl CommandHandler {
         
         for (user_id, role) in members {
             let role_str = match role {
-                descord_core::types::Role::Admin => "Admin".bright_red().bold(),
-                descord_core::types::Role::Moderator => "Moderator".bright_yellow(),
-                descord_core::types::Role::Member => "Member".bright_green(),
+                spaceway_core::types::Role::Admin => "Admin".bright_red().bold(),
+                spaceway_core::types::Role::Moderator => "Moderator".bright_yellow(),
+                spaceway_core::types::Role::Member => "Member".bright_green(),
             };
             println!("  {} [{}]", format!("{:?}", user_id).bright_white(), role_str);
         }
@@ -485,7 +485,7 @@ impl CommandHandler {
         }
         let mut user_id_bytes = [0u8; 32];
         user_id_bytes.copy_from_slice(&decoded);
-        let user_id = descord_core::types::UserId(user_id_bytes);
+        let user_id = spaceway_core::types::UserId(user_id_bytes);
         
         ui::print_info(&format!("Removing user {:?} from Space...", user_id));
         

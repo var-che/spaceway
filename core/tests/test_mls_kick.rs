@@ -9,9 +9,9 @@
 //! 2. Role removal on kick
 //! 3. Epoch increment (when OpenMLS member exists)
 
-use descord_core::mls::group::{MlsGroup, MlsGroupConfig};
-use descord_core::mls::provider::create_provider;
-use descord_core::types::{SpaceId, UserId, Role, EpochId};
+use spaceway_core::mls::group::{MlsGroup, MlsGroupConfig};
+use spaceway_core::mls::provider::create_provider;
+use spaceway_core::types::{SpaceId, UserId, Role, EpochId};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls::prelude::Ciphersuite;
 
@@ -186,7 +186,7 @@ fn test_role_removal_basic() {
     
     // Check Bob has no permissions
     let perms = group.get_permissions(&bob_id);
-    use descord_core::permissions::Permissions;
+    use spaceway_core::permissions::Permissions;
     assert_eq!(perms, Permissions::NONE);
     println!("   ✓ Bob has no permissions");
     

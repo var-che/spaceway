@@ -1,5 +1,5 @@
 {
-  description = "Descord - Privacy-preserving decentralized communication platform";
+  description = "Spaceway - Privacy-preserving decentralized communication platform";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -90,8 +90,8 @@
         };
 
         # Package the CLI application
-        packages.descord-cli = pkgs.rustPlatform.buildRustPackage {
-          pname = "descord";
+        packages.spaceway-cli = pkgs.rustPlatform.buildRustPackage {
+          pname = "spaceway";
           version = "0.1.0";
           src = ./.;
 
@@ -106,14 +106,14 @@
 
           meta = with pkgs.lib; {
             description = "Privacy-preserving decentralized communication platform";
-            homepage = "https://github.com/yourusername/descord";
+            homepage = "https://github.com/yourusername/spaceway";
             license = licenses.mit;
             maintainers = [ ];
           };
         };
 
         # Default package
-        packages.default = self.packages.${system}.descord-cli;
+        packages.default = self.packages.${system}.spaceway-cli;
 
         # For running tests with proper environment
         apps.test = {

@@ -1,5 +1,5 @@
-use descord_core::{Client, ClientConfig, Result, crypto::Keypair};
-use descord_core::types::{SpaceVisibility, NetworkTransportMode, PrivacyLevel};
+use spaceway_core::{Client, ClientConfig, Result, crypto::Keypair};
+use spaceway_core::types::{SpaceVisibility, NetworkTransportMode, PrivacyLevel};
 use std::path::PathBuf;
 
 #[tokio::test]

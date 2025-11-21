@@ -2,7 +2,7 @@
 //!
 //! Tests that operations and blobs are automatically uploaded/fetched from DHT
 
-use descord_core::{
+use spaceway_core::{
     Client, ClientConfig,
     types::*,
     crypto::signing::Keypair,
@@ -201,7 +201,7 @@ async fn test_blob_fetch_fallback() -> anyhow::Result<()> {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
     hasher.update(b"nonexistent");
-    let fake_hash = descord_core::storage::BlobHash(hasher.finalize().into());
+    let fake_hash = spaceway_core::storage::BlobHash(hasher.finalize().into());
     
     // Try to fetch (will fail, but demonstrates fallback code path)
     let result = client.retrieve_blob_for_space(&space_id, &fake_hash).await;

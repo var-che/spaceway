@@ -8,8 +8,8 @@
 //! 5. Bob receives Welcome message and joins
 //! 6. Both can now encrypt/decrypt messages in the MLS group
 
-use descord_core::{Client, ClientConfig};
-use descord_core::types::Role;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::types::Role;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -26,7 +26,7 @@ async fn test_mls_member_addition_with_connected_peers() {
 
     // Step 1: Create Alice
     println!("📝 Step 1: Alice creates account and starts listening...");
-    let alice_keypair = descord_core::crypto::signing::Keypair::generate();
+    let alice_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let alice_config = ClientConfig {
         storage_path: PathBuf::from("test-alice-mls"),
         listen_addrs: vec!["/ip4/127.0.0.1/tcp/9877".to_string()],
@@ -59,7 +59,7 @@ async fn test_mls_member_addition_with_connected_peers() {
 
     // Step 3: Create Bob
     println!("\n📝 Step 3: Bob creates account and starts...");
-    let bob_keypair = descord_core::crypto::signing::Keypair::generate();
+    let bob_keypair = spaceway_core::crypto::signing::Keypair::generate();
     let bob_config = ClientConfig {
         storage_path: PathBuf::from("test-bob-mls"),
         listen_addrs: vec![],
@@ -183,7 +183,7 @@ async fn test_mls_keypackage_generation_on_startup() {
     let _ = std::fs::remove_dir_all("test-kp-gen");
 
     println!("📝 Creating client...");
-    let keypair = descord_core::crypto::signing::Keypair::generate();
+    let keypair = spaceway_core::crypto::signing::Keypair::generate();
     let config = ClientConfig {
         storage_path: PathBuf::from("test-kp-gen"),
         listen_addrs: vec![],

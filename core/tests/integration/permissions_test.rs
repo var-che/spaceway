@@ -7,7 +7,7 @@
 /// - Moderation actions (kick, role changes)
 /// - Permission enforcement
 
-use descord_core::{
+use spaceway_core::{
     Permissions, Role,
     mls::{MlsGroup, MlsGroupConfig, provider::create_provider},
     types::{SpaceId, UserId},

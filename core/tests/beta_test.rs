@@ -5,16 +5,16 @@
 //! - Simulates 3 users (Alice, Bob, Charlie) joining a space
 //! - Tests messaging, discovery, and synchronization
 //! - Validates privacy guarantees
-//! - Automatically runs with: cargo test --package descord-core --test beta_test -- --nocapture
+//! - Automatically runs with: cargo test --package spaceway-core --test beta_test -- --nocapture
 
-use descord_core::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
 use std::time::Duration;
 use tokio::time::sleep;
 use tempfile::TempDir;
 
 #[tokio::test]
-#[ignore] // Run with: cargo test --package descord-core --test beta_test -- --ignored --nocapture
+#[ignore] // Run with: cargo test --package spaceway-core --test beta_test -- --ignored --nocapture
 async fn automated_beta_test() {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════════════╗");

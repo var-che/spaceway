@@ -1,16 +1,16 @@
 [package]
-name = "descord-cli"
+name = "spaceway-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "descord"
+name = "spaceway"
 path = "src/main.rs"
 
 [dependencies]
-descord-core = { path = "../core" }
+spaceway-core = { path = "../core" }
 
 # Async
 tokio.workspace = true

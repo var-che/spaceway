@@ -2,7 +2,7 @@
 //!
 //! These tests demonstrate multi-client MLS scenarios.
 
-use descord_core::smoothtest::*;
+use spaceway_core::smoothtest::*;
 
 #[tokio::test]
 async fn test_mls_multi_client_setup() {

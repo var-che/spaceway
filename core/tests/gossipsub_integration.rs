@@ -2,8 +2,8 @@
 //! 
 //! Tests real-time message propagation via GossipSub across multiple peers
 
-use descord_core::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
 use std::time::Duration;
 use tokio::time::sleep;
 use tempfile::TempDir;
@@ -28,7 +28,7 @@ async fn create_test_client(name: &str) -> (Client, TempDir) {
 }
 
 #[tokio::test]
-#[ignore] // Run with: cargo test --package descord-core --test gossipsub_integration -- --ignored --nocapture
+#[ignore] // Run with: cargo test --package spaceway-core --test gossipsub_integration -- --ignored --nocapture
 async fn test_gossipsub_message_propagation() {
     println!("\n╔════════════════════════════════════════════════════════╗");
     println!("║    GOSSIPSUB INTEGRATION TEST                         ║");

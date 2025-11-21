@@ -6,8 +6,8 @@
 //! 3. Neither Alice nor Bob know each other's IP addresses
 //! 4. Messages are exchanged through the relay
 
-use descord_core::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
+use spaceway_core::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
 use std::time::Duration;
 use tokio::time::sleep;
 use tempfile::TempDir;

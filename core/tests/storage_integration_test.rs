@@ -7,7 +7,7 @@
 //! - Data integrity
 
 use anyhow::Result;
-use descord_core::{
+use spaceway_core::{
     Client, ClientConfig,
     crypto::Keypair,
 };

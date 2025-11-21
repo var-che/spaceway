@@ -5,7 +5,7 @@
 mod integration;
 
 use anyhow::Result;
-use descord_core::{Client, ClientConfig, crypto::Keypair};
+use spaceway_core::{Client, ClientConfig, crypto::Keypair};
 use tokio::time::{sleep, Duration};
 
 /// Helper to create a test client

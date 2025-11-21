@@ -1,4 +1,4 @@
-use descord_core::network::{NetworkNode, relay::{RelayMode, RelayInfo}};
+use spaceway_core::network::{NetworkNode, relay::{RelayMode, RelayInfo}};
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn, debug};
@@ -132,7 +132,7 @@ async fn test_client_only_mode() -> Result<()> {
 /// Test: Relay with fallback to bootstrap
 #[tokio::test]
 async fn test_relay_discovery_with_bootstrap_fallback() -> Result<()> {
-    use descord_core::network::relay::default_relay_addresses;
+    use spaceway_core::network::relay::default_relay_addresses;
     
     let (node, _rx) = NetworkNode::new()?;
     
@@ -164,7 +164,7 @@ async fn test_relay_discovery_with_bootstrap_fallback() -> Result<()> {
 /// Test: Relay mode serialization
 #[tokio::test]
 async fn test_relay_mode_serialization() -> Result<()> {
-    use descord_core::network::relay::RelayMode;
+    use spaceway_core::network::relay::RelayMode;
     
     let modes = vec![
         RelayMode::ClientOnly,

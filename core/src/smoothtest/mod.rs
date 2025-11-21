@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use descord_core::smoothtest::*;
+//! use spaceway_core::smoothtest::*;
 //!
 //! #[tokio::test]
 //! async fn test_dht_with_multiple_nodes() {

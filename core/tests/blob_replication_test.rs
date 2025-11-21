@@ -2,7 +2,7 @@
 //! 
 //! Tests Phase 4: Encrypted Blob Storage and Retrieval
 
-use descord_core::{
+use spaceway_core::{
     Client, ClientConfig,
     types::*,
     crypto::signing::Keypair,

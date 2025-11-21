@@ -1,6 +1,6 @@
-use descord_core::client::{Client, ClientConfig};
-use descord_core::crypto::Keypair;
-use descord_core::{SpaceVisibility, InvitePermissions, Signature, SpaceId, EpochId};
+use spaceway_core::client::{Client, ClientConfig};
+use spaceway_core::crypto::Keypair;
+use spaceway_core::{SpaceVisibility, InvitePermissions, Signature, SpaceId, EpochId};
 use anyhow::Result;
 use tokio;
 use std::path::PathBuf;
@@ -120,7 +120,7 @@ async fn test_offline_space_joining() -> Result<()> {
 /// Test that signature verification works
 #[tokio::test]
 async fn test_space_metadata_signature_verification() -> Result<()> {
-    use descord_core::forum::{SpaceMetadata, Space};
+    use spaceway_core::forum::{SpaceMetadata, Space};
     use std::collections::HashMap;
     use ed25519_dalek::SigningKey;
     
@@ -157,7 +157,7 @@ async fn test_space_metadata_signature_verification() -> Result<()> {
 /// Test encryption and decryption round-trip
 #[tokio::test]
 async fn test_encrypted_metadata_round_trip() -> Result<()> {
-    use descord_core::forum::{SpaceMetadata, EncryptedSpaceMetadata, Space};
+    use spaceway_core::forum::{SpaceMetadata, EncryptedSpaceMetadata, Space};
     use std::collections::HashMap;
     use ed25519_dalek::SigningKey;
     

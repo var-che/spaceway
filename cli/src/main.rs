@@ -50,11 +50,18 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
+                .add_directive(tracing::Level::WARN.into()),
         )
         .init();
 
     let args = Args::parse();
+
+    // Print banner with version
+    println!("{}", "=".repeat(60).bright_blue());
+    println!("{}", format!("  {}", descord_core::version_string()).bright_cyan().bold());
+    println!("{}", "  Privacy-First Decentralized Communication".bright_white());
+    println!("{}", "=".repeat(60).bright_blue());
+    println!();
 
     // Load or create account
     let mut account_mgr = AccountManager::new(args.account.clone())?;

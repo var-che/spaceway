@@ -51,6 +51,7 @@ impl CommandHandler {
 
         match parts[0] {
             "whoami" => self.cmd_whoami().await,
+            "version" | "about" => self.cmd_version(),
             "context" => self.cmd_context(),
             "network" => self.cmd_network().await,
             "connect" => self.cmd_connect(&parts[1..]).await,
@@ -66,12 +67,67 @@ impl CommandHandler {
             "join" => self.cmd_join(&parts[1..]).await,
             "upload" => self.cmd_upload(&parts[1..]).await,
             "refresh" => self.cmd_refresh().await,
+            "help" => self.cmd_help(),
             _ => {
                 ui::print_error(&format!("Unknown command: {}", parts[0]));
                 ui::print_info("Type 'help' for available commands");
                 Ok(())
             }
         }
+    }
+
+    fn cmd_version(&self) -> Result<()> {
+        println!();
+        println!("{}", "=".repeat(60).bright_blue());
+        println!("{}", format!("  {}", descord_core::version_string()).bright_cyan().bold());
+        println!("{}", "  Privacy-First Decentralized Communication".bright_white());
+        println!("{}", "=".repeat(60).bright_blue());
+        println!();
+        println!("{} {}", "Protocol Version:".bright_green(), descord_core::PROTOCOL_VERSION);
+        println!("{} {}", "Build:".bright_green(), descord_core::version::BUILD_PROFILE);
+        println!();
+        println!("{}", "For more information:".bright_blue());
+        println!("  GitHub: {}", "https://github.com/descord/descord".bright_cyan());
+        println!("  Docs:   {}", "https://descord.org/docs".bright_cyan());
+        println!();
+        Ok(())
+    }
+
+    fn cmd_help(&self) -> Result<()> {
+        println!();
+        println!("{}", "Available Commands:".bright_cyan().bold());
+        println!();
+        println!("{}", "  Information:".bright_yellow());
+        println!("    {} - Show current user info", "whoami".bright_green());
+        println!("    {} - Show version and build info", "version".bright_green());
+        println!("    {} - Show current context (space/channel/thread)", "context".bright_green());
+        println!("    {} - Show help", "help".bright_green());
+        println!();
+        println!("{}", "  Network:".bright_yellow());
+        println!("    {} - Show network status and peer ID", "network".bright_green());
+        println!("    {} <multiaddr> - Connect to a peer", "connect".bright_green());
+        println!();
+        println!("{}", "  Spaces:".bright_yellow());
+        println!("    {} - List all spaces", "spaces".bright_green());
+        println!("    {} <name> - Create or switch to space", "space".bright_green());
+        println!("    {} <space_id> <code> - Join space with invite", "join".bright_green());
+        println!("    {} - Create invite for current space", "invite".bright_green());
+        println!();
+        println!("{}", "  Channels & Threads:".bright_yellow());
+        println!("    {} - List channels in current space", "channels".bright_green());
+        println!("    {} <name> - Create or switch to channel", "channel".bright_green());
+        println!("    {} - List threads in current channel", "threads".bright_green());
+        println!("    {} <title> - Create or switch to thread", "thread".bright_green());
+        println!();
+        println!("{}", "  Messages:".bright_yellow());
+        println!("    {} - Show messages in current thread", "messages".bright_green());
+        println!("    {} <text> - Send message to current thread", "send".bright_green());
+        println!();
+        println!("{}", "  Files:".bright_yellow());
+        println!("    {} <path> - Upload file to DHT", "upload".bright_green());
+        println!("    {} - Refresh local state from network", "refresh".bright_green());
+        println!();
+        Ok(())
     }
 
     async fn cmd_whoami(&self) -> Result<()> {

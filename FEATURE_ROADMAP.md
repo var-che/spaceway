@@ -1,5 +1,21 @@
 # Descord Feature Roadmap - Privacy-Focused Discord Alternative
 
+## 📦 Current Version: 0.1.0 (Beta)
+
+**Release**: November 21, 2025  
+**Status**: Beta - Ready for small group testing  
+**Network**: 2+ peer P2P sync working, DHT optional
+
+### Version History
+- **0.1.0** (Nov 21, 2025): Initial beta with P2P sync protocol
+  - GossipSub real-time messaging
+  - Peer-to-peer historical data sync
+  - Space invites with 8-char codes
+  - CLI application with network commands
+  - Dual-index storage for fast queries
+
+---
+
 ## Current Architecture ✅
 
 **Data Model**: Space → Channels → Threads → Messages (hierarchical structure)
@@ -11,6 +27,9 @@
 - ✅ CRDT-based synchronization
 - ✅ E2E encryption via MLS
 - ✅ P2P networking via libp2p
+- ✅ **Real-time GossipSub messaging**
+- ✅ **P2P sync protocol (SYNC_REQUEST)**
+- ✅ **2-peer network support**
 
 ---
 
@@ -98,6 +117,51 @@ pub enum InviteCreatorRole {
     Everyone,
 }
 ```
+
+---
+
+### 1.3 Networking & Synchronization ✅ **MOSTLY COMPLETE**
+**Status**: Core P2P working, needs optimization for scale
+
+#### Completed ✅
+- ✅ **GossipSub**: Real-time pub/sub messaging
+  - Topic-based routing (per-Space topics)
+  - Message signing and verification
+  - 2-peer network support (mesh_n=2, mesh_n_low=1)
+  - Explicit peering for small networks
+  
+- ✅ **P2P Sync Protocol**: Historical data sync
+  - SYNC_REQUEST/response via GossipSub
+  - Automatic operation re-broadcast
+  - Works without DHT (2+ peers)
+  
+- ✅ **Dual Storage Index**:
+  - Operations indexed by op_id (deduplication)
+  - Operations indexed by space_id (fast queries)
+  
+- ✅ **Connection Management**:
+  - Configurable listen addresses (--port)
+  - Bootstrap peers (--bootstrap)
+  - Direct peer dialing (/ip4/IP/tcp/PORT/p2p/PEER_ID)
+  - Connection events (PeerConnected/Disconnected)
+
+#### In Progress 🔨
+- ⏳ **DHT Optimization**: Currently requires 3+ peers for quorum
+  - Need to make DHT work better with 2 peers
+  - Or make DHT fully optional (use P2P sync as primary)
+  
+- ⏳ **Relay Support**: Circuit Relay v2 for NAT traversal
+  - Infrastructure in place but needs testing
+  - Need public relay servers
+
+#### Next Steps 📋
+- [ ] **Connection Quality**: Track peer latency, message success rates
+- [ ] **Bandwidth Management**: Rate limiting, message size limits
+- [ ] **Peer Discovery**: Better mechanisms beyond bootstrap
+- [ ] **Network Resilience**: Automatic reconnection, failover
+- [ ] **Metrics Dashboard**: Network health monitoring
+
+**Priority**: LOW - Networking works well enough for beta testing
 
 ---
 
@@ -568,16 +632,72 @@ pub struct OfflineQueue {
 
 ---
 
-## Implementation Priority
+## 🎯 Implementation Priority (Updated Nov 21, 2025)
 
-### Phase 1 (MVP+): Core Privacy & Usability
-1. ✅ **COMPLETED** - Space visibility controls (Public/Private/Hidden)
-2. ✅ **COMPLETED** - Invite system (links, codes, expiration)
-3. ⏳ **IN PROGRESS** - Granular permissions system
-4. ⏳ **PENDING** - Direct messages (1-on-1 and group DMs)
-5. ⏳ **PENDING** - Basic moderation (ban, timeout, message deletion)
+### Phase 0: Foundation ✅ **COMPLETED**
+1. ✅ **Core Data Model** - Space/Channel/Thread/Message hierarchy
+2. ✅ **CRDT Operations** - Conflict-free state synchronization
+3. ✅ **P2P Networking** - libp2p with GossipSub + Kademlia DHT
+4. ✅ **Storage Layer** - RocksDB with dual indexing
+5. ✅ **E2E Encryption** - MLS (Message Layer Security)
+6. ✅ **CLI Application** - Working terminal interface
+7. ✅ **Space Visibility** - Public/Private/Hidden modes
+8. ✅ **Invite System** - 8-char codes with expiration
+9. ✅ **P2P Sync Protocol** - Historical data sync via SYNC_REQUEST
+10. ✅ **2-Peer Networks** - GossipSub optimized for small groups
+
+**Current State**: v0.1.0 - Beta ready for small group testing (2-10 users)
+
+---
+
+### Phase 1 (MVP+): Essential Features for Beta Testing
+**Target**: v0.2.0 - Public Beta
+**Timeline**: Next 2-4 weeks
+
+**Blockers for Public Beta**:
+1. 🔴 **Message Persistence & History** [CRITICAL]
+   - [ ] Message pagination (load older messages)
+   - [ ] Message search within channels
+   - [ ] Unread message tracking
+   - **Why Critical**: Users can't scroll back through history
+   - **Effort**: 3-5 days
+
+2. 🔴 **Basic Notifications** [CRITICAL]
+   - [ ] Desktop notifications for new messages
+   - [ ] @mention detection and alerts
+   - [ ] Unread badges per channel/space
+   - **Why Critical**: Users miss messages when app is backgrounded
+   - **Effort**: 2-3 days
+
+3. 🟡 **User Profiles** [HIGH]
+   - [ ] Display names (separate from username)
+   - [ ] User avatars (profile pictures)
+   - [ ] User status (online/offline/away)
+   - [ ] "About me" / bio
+   - **Why Important**: Basic social features expected by users
+   - **Effort**: 3-4 days
+
+4. 🟡 **Direct Messages** [HIGH]
+   - [ ] 1-on-1 DMs
+   - [ ] Group DMs (2-10 people)
+   - [ ] DM list UI
+   - **Why Important**: Core Discord feature, users expect it
+   - **Effort**: 5-7 days
+
+5. 🟢 **Permissions Refinement** [MEDIUM]
+   - [ ] Role-based permissions (beyond Admin/Mod/Member)
+   - [ ] Channel permission overrides
+   - [ ] "View-only" channels
+   - **Why Important**: Necessary for larger communities
+   - **Effort**: 4-5 days
+
+**Total Estimated Effort**: 17-28 days (3-6 weeks for one developer)
+
+---
 
 ### Phase 2: Rich Communication
+**Target**: v0.3.0 - Feature Parity
+**Timeline**: 1-2 months after v0.2.0
 6. Voice channels (text-to-voice first)
 7. File attachments & media
 8. Custom emoji & reactions

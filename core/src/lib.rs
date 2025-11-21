@@ -14,10 +14,12 @@ pub mod network;
 pub mod permissions;
 pub mod storage;
 pub mod types;
+pub mod version;
 
 pub use client::{Client, ClientConfig};
 pub use permissions::{Permissions, PermissionResult};
 pub use types::*;
+pub use version::{VERSION, version_string, PROTOCOL_VERSION};
 
 /// Result type used throughout the library
 pub type Result<T> = std::result::Result<T, Error>;

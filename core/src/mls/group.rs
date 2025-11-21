@@ -136,6 +136,60 @@ impl MlsGroup {
         self.member_roles.insert(user_id, role);
     }
 
+    /// Add a new member to the MLS group using their KeyPackage
+    /// 
+    /// This adds the member to the MLS group, which:
+    /// 1. Adds them to the member list
+    /// 2. Triggers key rotation (new epoch)
+    /// 3. Generates a Welcome message for the new member
+    /// 4. Generates group info for existing members
+    /// 
+    /// # Arguments
+    /// * `user_id` - The user to add
+    /// * `role` - The role to assign to the new member
+    /// * `key_package` - The KeyPackage fetched from DHT
+    /// * `admin_id` - The user performing the add (must have permission)
+    /// * `provider` - Crypto provider
+    /// 
+    /// # Returns
+    /// A tuple of (MlsMessageOut, MlsMessageOut) that must be distributed:
+    /// - First MlsMessageOut: Send to existing group members (the Commit)
+    /// - Second MlsMessageOut: Send to the new member (the Welcome)
+    pub fn add_member_with_key_package(
+        &mut self,
+        user_id: UserId,
+        role: Role,
+        key_package: openmls::prelude::KeyPackage,
+        admin_id: &UserId,
+        provider: &DescordProvider,
+    ) -> Result<(openmls::framing::MlsMessageOut, openmls::framing::MlsMessageOut)> {
+        // Check if caller has permission to add members
+        let admin_perms = self.get_permissions(admin_id);
+        if !admin_perms.can_manage_roles() && !admin_perms.is_administrator() {
+            return Err(Error::Permission(
+                "Only administrators and moderators can add members".to_string()
+            ));
+        }
+
+        // Add the member to the MLS group
+        // This creates a Commit that adds the member and rotates keys
+        let (mls_message, welcome_msg, _group_info) = self.group
+            .add_members(provider, &self.signer, &[key_package])
+            .map_err(|e| Error::Crypto(format!("Failed to add member to MLS group: {:?}", e)))?;
+
+        // Increment epoch
+        self.current_epoch = EpochId(self.current_epoch.0 + 1);
+
+        // Add to local role mapping
+        self.member_roles.insert(user_id, role);
+        
+        println!("✓ Added member {} to MLS group (epoch {})", user_id, self.current_epoch.0);
+        
+        // Return the commit message and welcome message
+        // Note: welcome_msg might be an MlsMessageOut, need to extract Welcome
+        Ok((mls_message, welcome_msg))
+    }
+
     /// Remove member from MLS group and rotate keys
     /// 
     /// This removes a member from the MLS group, which:

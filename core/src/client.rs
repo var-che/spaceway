@@ -1090,6 +1090,81 @@ impl Client {
         Ok(op)
     }
     
+    /// Add a member to a Space with full MLS integration
+    /// 
+    /// This method:
+    /// 1. Fetches the user's KeyPackage from DHT
+    /// 2. Adds them to the MLS group (triggering key rotation)
+    /// 3. Distributes the Welcome message to the new member
+    /// 4. Distributes the Commit message to existing members
+    /// 5. Creates and broadcasts the AddMember CRDT operation
+    pub async fn add_member_with_mls(
+        &self,
+        space_id: SpaceId,
+        user_id: UserId,
+        role: Role,
+    ) -> Result<CrdtOp> {
+        // Step 1: Fetch the user's KeyPackage from DHT
+        println!("🔑 Fetching KeyPackage for user {} from DHT...", user_id);
+        let key_package_bundle = self.fetch_key_package_from_dht(&user_id).await?;
+        
+        // Step 2: Deserialize the KeyPackage
+        let key_package = crate::mls::KeyPackageStore::deserialize_key_package(
+            &key_package_bundle,
+            &self.mls_provider
+        )?;
+        
+        // Step 3: Add member to MLS group and get messages to distribute
+        let mut manager = self.space_manager.write().await;
+        let (commit_msg, welcome_msg) = manager.add_member_with_mls(
+            &space_id,
+            user_id,
+            role,
+            key_package,
+            &self.user_id,
+            &self.mls_provider,
+        )?;
+        
+        // Step 4: Create CRDT operation
+        let op = manager.add_member(
+            space_id,
+            user_id,
+            role,
+            self.user_id,
+            &self.keypair,
+        )?;
+        drop(manager);
+        
+        // Step 5: Store operation
+        self.store.put_op(&op)?;
+        
+        // Step 6: Broadcast the CRDT operation
+        self.broadcast_op(&op).await?;
+        
+        // Step 7: Distribute MLS messages via GossipSub
+        let space_topic = format!("space/{}/mls", hex::encode(&space_id.0[..8]));
+        
+        // Convert MLS messages to bytes - OpenMLS MlsMessageOut has to_bytes() method
+        let commit_bytes = commit_msg.to_bytes()
+            .map_err(|e| crate::Error::Serialization(format!("Failed to serialize Commit: {:?}", e)))?;
+        let mut network = self.network.write().await;
+        network.publish(&space_topic, commit_bytes).await?;
+        println!("✓ Sent Commit message to existing members");
+        
+        // Serialize and send Welcome to new member (via direct topic)
+        let welcome_topic = format!("user/{}/welcome", hex::encode(&user_id.0[..8]));
+        let welcome_bytes = welcome_msg.to_bytes()
+            .map_err(|e| crate::Error::Serialization(format!("Failed to serialize Welcome: {:?}", e)))?;
+        network.publish(&welcome_topic, welcome_bytes).await?;
+        println!("✓ Sent Welcome message to new member");
+        
+        drop(network);
+        
+        println!("✅ Successfully added member {} to Space with MLS", user_id);
+        
+        Ok(op)
+    }
+    
     /// Remove a member from a Space (kick)
     /// 
     /// This removes the member from the Space and triggers MLS key rotation

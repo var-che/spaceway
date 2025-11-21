@@ -502,6 +502,37 @@ impl SpaceManager {
         Ok(op)
     }
     
+    /// Add a member to a Space with MLS group integration
+    /// 
+    /// This adds the member to both the Space and the MLS group,
+    /// triggering key rotation and returning messages to distribute.
+    pub fn add_member_with_mls(
+        &mut self,
+        space_id: &SpaceId,
+        user_id: UserId,
+        role: Role,
+        key_package: openmls::prelude::KeyPackage,
+        admin_id: &UserId,
+        provider: &crate::mls::DescordProvider,
+    ) -> Result<(openmls::framing::MlsMessageOut, openmls::framing::MlsMessageOut)> {
+        // Get the MLS group for this Space
+        let mls_group = self.mls_groups.get_mut(space_id)
+            .ok_or_else(|| Error::NotFound(format!("MLS group for Space {:?} not found", space_id)))?;
+        
+        // Add member to MLS group and get messages
+        let (commit_msg, welcome_msg) = mls_group.add_member_with_key_package(
+            user_id,
+            role,
+            key_package,
+            admin_id,
+            provider,
+        )?;
+        
+        println!("✓ MLS group updated - new epoch: {}", mls_group.epoch().0);
+        
+        Ok((commit_msg, welcome_msg))
+    }
+    
     /// Remove a member from a Space (kick)
     pub fn remove_member(
         &mut self,

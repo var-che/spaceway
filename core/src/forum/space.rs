@@ -648,6 +648,11 @@ impl SpaceManager {
         self.mls_groups.get(space_id)
     }
     
+    /// Get mutable MLS group for a Space (for encryption/decryption)
+    pub fn get_mls_group_mut(&mut self, space_id: &SpaceId) -> Option<&mut MlsGroup> {
+        self.mls_groups.get_mut(space_id)
+    }
+    
     /// Generate a random invite code (8 characters, alphanumeric)
     fn generate_invite_code() -> String {
         use rand::Rng;

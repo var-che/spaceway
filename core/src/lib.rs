@@ -13,6 +13,10 @@ pub mod mls;
 pub mod network;
 pub mod permissions;
 pub mod storage;
+
+// Testing utilities - available for integration tests
+#[cfg(any(test, feature = "test-utils"))]
+pub mod smoothtest;
 pub mod types;
 pub mod version;
 

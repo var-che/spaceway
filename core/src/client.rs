@@ -81,8 +81,8 @@ pub struct Client {
     /// Storage backend
     store: Arc<Store>,
     
-    /// MLS provider
-    mls_provider: DescordProvider,
+    /// MLS provider (wrapped in Arc<RwLock> for shared mutable access)
+    mls_provider: Arc<RwLock<DescordProvider>>,
     
     /// KeyPackage store for MLS member addition
     keypackage_store: Arc<RwLock<crate::mls::KeyPackageStore>>,
@@ -121,8 +121,8 @@ impl Client {
         let network = Arc::new(RwLock::new(network_node));
         let network_rx = Arc::new(RwLock::new(network_rx));
         
-        // Create MLS provider
-        let mls_provider = create_provider();
+        // Create MLS provider (wrapped in Arc<RwLock> for shared mutable access)
+        let mls_provider = Arc::new(RwLock::new(create_provider()));
         
         // Create MLS signer and KeyPackage store
         use openmls::prelude::*;
@@ -134,8 +134,13 @@ impl Client {
         let mut kp_store = crate::mls::KeyPackageStore::new(user_id, mls_signer, ciphersuite);
         
         // Generate initial batch of KeyPackages (10 packages)
-        let _key_packages = kp_store.generate_key_packages(10, &mls_provider)?;
-        println!("✓ Generated {} KeyPackages for user {}", 10, user_id);
+        // Using try_read() since this is not an async context
+        {
+            let provider_lock = mls_provider.try_read()
+                .map_err(|e| crate::Error::Crypto(format!("Failed to acquire provider lock: {}", e)))?;
+            let _key_packages = kp_store.generate_key_packages(10, &provider_lock)?;
+            println!("✓ Generated {} KeyPackages for user {}", 10, user_id);
+        }
         
         let keypackage_store = Arc::new(RwLock::new(kp_store));
         
@@ -166,6 +171,11 @@ impl Client {
         {
             let mut network = self.network.write().await;
             let _ = network.subscribe("descord/space-discovery").await;
+            
+            // Subscribe to user's personal Welcome message topic for MLS group invitations
+            let welcome_topic = format!("user/{}/welcome", hex::encode(&self.user_id.0[..8]));
+            let _ = network.subscribe(&welcome_topic).await;
+            println!("✓ Subscribed to Welcome message topic: {}", welcome_topic);
         }
         
         // Spawn event processing task
@@ -176,6 +186,8 @@ impl Client {
         let network_rx = Arc::clone(&self.network_rx);
         let network = Arc::clone(&self.network);
         let gossip_metrics = Arc::clone(&self.gossip_metrics);
+        let mls_provider = Arc::clone(&self.mls_provider); // Clone Arc<RwLock> to share provider
+        let user_id = self.user_id; // Clone user_id for the async task
         
         tokio::spawn(async move {
             loop {
@@ -234,45 +246,158 @@ impl Client {
                                 }
                             }
                             
-                            // Decode CRDT operation
-                            match minicbor::decode::<CrdtOp>(&data) {
-                                Ok(op) => {
-                                    println!("  ✓ Decoded operation: {:?}", op.op_type);
-                                    // Verify signature before processing
-                                    if !op.verify_signature() {
-                                        eprintln!("⚠️ Rejected message with invalid signature from {:?}", source);
+                            // Check if this is a Welcome message (on user/{id}/welcome topic)
+                            if topic.starts_with("user/") && topic.ends_with("/welcome") {
+                                println!("  🎉 Received MLS Welcome message");
+                                
+                                // Process Welcome message to join MLS group
+                                use openmls_basic_credential::SignatureKeyPair;
+                                let ciphersuite = openmls::prelude::Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+                                let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+                                    .map_err(|e| crate::Error::Crypto(format!("Failed to create signer: {:?}", e)));
+                                
+                                if let Ok(signer) = signer {
+                                    // Use the shared provider that has the KeyPackage private keys
+                                    let provider = mls_provider.read().await;
+                                    match crate::mls::MlsGroup::from_welcome(
+                                        data.clone(),
+                                        user_id,
+                                        signer,
+                                        &provider
+                                    ) {
+                                    Ok(mls_group) => {
+                                        println!("  ✓ Successfully joined MLS group (epoch {})", mls_group.current_epoch().0);
+                                        
+                                        // Store the MLS group
+                                        // TODO: Extract space_id from Welcome context to properly store
+                                        // For now we log success but can't store without space_id
+                                        println!("  ⚠️ MLS group joined but needs space_id to store (will be synced via CRDT)");
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to process Welcome message: {}", e);
+                                    }
+                                }
+                                }
+                                
+                                continue; // Don't try to decode as CrdtOp
+                            }
+                            
+                            // Check for MLS encryption marker and decode the operation
+                            let op = if data.first() == Some(&0x01) {
+                                // MLS-encrypted - decrypt it
+                                println!("  🔒 MLS-encrypted message detected");
+                                
+                                // Message format: [0x01][space_id (32 bytes)][encrypted_data]
+                                if data.len() < 33 {
+                                    eprintln!("  ⚠️ MLS message too short (need at least 33 bytes)");
+                                    continue;
+                                }
+                                
+                                // Extract space_id from message
+                                let space_id_bytes: [u8; 32] = match data[1..33].try_into() {
+                                    Ok(bytes) => bytes,
+                                    Err(_) => {
+                                        eprintln!("  ⚠️ Invalid space_id in MLS message");
                                         continue;
                                     }
-                                    println!("  ✓ Signature verified");
+                                };
+                                let space_id = SpaceId(space_id_bytes);
+                                
+                                // Get the encrypted data (after marker + space_id)
+                                let encrypted_data = &data[33..];
+                                
+                                // Decrypt using the space's MLS group
+                                let decrypted_bytes = {
+                                    let mut space_mgr = space_manager.write().await;
+                                    let provider = mls_provider.read().await;
                                     
-                                    // Check if we've already processed this operation (deduplication)
-                                    let is_duplicate = if let Ok(Some(_)) = store.get_op(&op.op_id) {
-                                        // Already seen this op, skip processing
-                                        gossip_metrics.record_receive(&topic, true).await;
-                                        println!("  ⚠️ Duplicate operation, skipping");
-                                        true
-                                    } else {
-                                        gossip_metrics.record_receive(&topic, false).await;
-                                        false
-                                    };
-                                    
-                                    if is_duplicate {
+                                    match space_mgr.get_mls_group_mut(&space_id) {
+                                        Some(mls_group) => {
+                                            match mls_group.decrypt_application_message(encrypted_data, &provider) {
+                                                Ok(plaintext) => {
+                                                    println!("  ✓ Decrypted MLS message ({} bytes)", plaintext.len());
+                                                    plaintext
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("  ⚠️ Failed to decrypt MLS message: {}", e);
+                                                    eprintln!("     (You may have been removed from this Space)");
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            eprintln!("  ⚠️ No MLS group found for space_id {}", hex::encode(&space_id.0[..8]));
+                                            eprintln!("     (You may not be a member of this Space)");
+                                            continue;
+                                        }
+                                    }
+                                };
+                                
+                                // Decode the decrypted operation
+                                match minicbor::decode::<CrdtOp>(&decrypted_bytes) {
+                                    Ok(op) => op,
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to decode decrypted operation: {}", e);
                                         continue;
                                     }
-                                    println!("  ✓ Not a duplicate, processing...");
-                                    
-                                    tracing::debug!(
-                                        op_id = ?op.op_id,
-                                        op_type = ?op.op_type,
-                                        topic = %topic,
-                                        source = ?source,
-                                        "Received and validated CRDT operation"
-                                    );
-                                    
-                                    // If this is a CreateSpace on discovery topic, auto-subscribe to the space
-                                    if topic == "descord/space-discovery" {
-                                        if let crate::crdt::OpType::CreateSpace(payload) = &op.op_type {
-                                            if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
+                                }
+                            } else if data.first() == Some(&0x00) {
+                                // Plaintext - strip marker and decode
+                                match minicbor::decode::<CrdtOp>(&data[1..]) {
+                                    Ok(op) => op,
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to decode operation: {}", e);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                // Legacy format (no marker) - assume plaintext
+                                match minicbor::decode::<CrdtOp>(&data[..]) {
+                                    Ok(op) => op,
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to decode operation: {}", e);
+                                        continue;
+                                    }
+                                }
+                            };
+                            
+                            // Process the decoded operation
+                            println!("  ✓ Decoded operation: {:?}", op.op_type);
+                            // Verify signature before processing
+                            if !op.verify_signature() {
+                                eprintln!("⚠️ Rejected message with invalid signature from {:?}", source);
+                                continue;
+                            }
+                            println!("  ✓ Signature verified");
+                            
+                            // Check if we've already processed this operation (deduplication)
+                            let is_duplicate = if let Ok(Some(_)) = store.get_op(&op.op_id) {
+                                // Already seen this op, skip processing
+                                gossip_metrics.record_receive(&topic, true).await;
+                                println!("  ⚠️ Duplicate operation, skipping");
+                                true
+                            } else {
+                                gossip_metrics.record_receive(&topic, false).await;
+                                false
+                            };
+                            
+                            if is_duplicate {
+                                continue;
+                            }
+                            println!("  ✓ Not a duplicate, processing...");
+                            
+                            tracing::debug!(
+                                op_id = ?op.op_id,
+                                op_type = ?op.op_type,
+                                topic = %topic,
+                                source = ?source,
+                                "Received and validated CRDT operation"
+                            );
+                            
+                            // If this is a CreateSpace on discovery topic, auto-subscribe to the space
+                            if topic == "descord/space-discovery" {
+                                if let crate::crdt::OpType::CreateSpace(payload) = &op.op_type {
+                                    if let crate::crdt::OpPayload::CreateSpace { name, .. } = payload {
                                                 println!("📢 Discovered space: {} (space_{})", name, ::hex::encode(&op.space_id.0[..4]));
                                                 
                                                 // Auto-subscribe to the space topic
@@ -324,11 +449,6 @@ impl Client {
                                         }
                                         _ => {}
                                     }
-                                }
-                                Err(e) => {
-                                    eprintln!("⚠️ Failed to decode CRDT operation: {}", e);
-                                }
-                            }
                         }
                         NetworkEvent::PeerConnected(peer_id) => {
                             println!("Peer connected: {}", peer_id);
@@ -389,6 +509,7 @@ impl Client {
         let name_for_announcement = name.clone();
         
         let mut manager = self.space_manager.write().await;
+        let provider = self.mls_provider.read().await;
         let op = manager.create_space_with_visibility(
             space_id,
             name,
@@ -396,10 +517,9 @@ impl Client {
             visibility,
             self.user_id,
             &self.keypair,
-            &self.mls_provider,
+            &provider,
         )?;
-        
-        // Store operation
+                drop(provider);        // Store operation
         self.store.put_op(&op)?;
         
         // Broadcast operation on space topic
@@ -608,6 +728,36 @@ impl Client {
     pub async fn list_invites(&self, space_id: &SpaceId) -> Vec<Invite> {
         let manager = self.space_manager.read().await;
         manager.list_invites(space_id).into_iter().cloned().collect()
+    }
+    
+    /// Sync a Space from DHT (useful after being added as a member via GossipSub)
+    /// 
+    /// When you're added to a Space via GossipSub, you receive the AddMember operation
+    /// but not the historical operations (CreateSpace, CreateChannel, messages, etc.).
+    /// This method fetches all historical operations from DHT and applies them.
+    pub async fn sync_space_from_dht(&self, space_id: SpaceId) -> Result<()> {
+        println!("🔄 Syncing Space {} from DHT...", space_id);
+        
+        // Fetch CRDT operations from DHT
+        let ops = self.dht_get_operations(&space_id).await?;
+        
+        println!("  → Fetched {} operations from DHT", ops.len());
+        
+        // Apply operations to rebuild state
+        if !ops.is_empty() {
+            for op in &ops {
+                // Apply each operation (this rebuilds channels, threads, messages, etc.)
+                if let Err(e) = self.handle_incoming_op(op.clone()).await {
+                    eprintln!("⚠ Failed to apply operation: {}", e);
+                }
+            }
+            println!("✓ Synced Space state from {} operations", ops.len());
+        }
+        
+        // Subscribe to space topic for future updates
+        self.subscribe_to_space(&space_id).await?;
+        
+        Ok(())
     }
     
     /// Join a space by fetching metadata from DHT (works when creator is offline)
@@ -974,6 +1124,15 @@ impl Client {
     
     // ============ MLS KeyPackage Management ============
     
+    /// Get a KeyPackage bundle for this user (for direct P2P exchange)
+    /// 
+    /// This allows direct KeyPackage exchange between connected peers without using DHT.
+    /// Useful for 2-peer scenarios where DHT quorum cannot be achieved.
+    pub async fn get_key_package_bundle(&self) -> Result<crate::mls::KeyPackageBundle> {
+        let mut kp_store = self.keypackage_store.write().await;
+        kp_store.get_key_package_bundle()
+    }
+    
     /// Publish this user's KeyPackages to the DHT
     /// 
     /// Other users can fetch these KeyPackages to add this user to their MLS groups.
@@ -982,7 +1141,9 @@ impl Client {
         
         // Get KeyPackages from store
         let mut kp_store = self.keypackage_store.write().await;
-        let bundles = kp_store.generate_key_packages(5, &self.mls_provider)?;
+        let provider = self.mls_provider.read().await;
+        let bundles = kp_store.generate_key_packages(5, &provider)?;
+        drop(provider);
         drop(kp_store);
         
         if bundles.is_empty() {
@@ -1090,6 +1251,85 @@ impl Client {
         Ok(op)
     }
     
+    /// Add a member to a Space with MLS using a provided KeyPackage bundle
+    /// 
+    /// This method allows direct P2P KeyPackage exchange without DHT.
+    /// Useful for 2-peer scenarios where DHT quorum cannot be achieved.
+    pub async fn add_member_with_key_package_bundle(
+        &self,
+        space_id: SpaceId,
+        user_id: UserId,
+        role: Role,
+        key_package_bundle: crate::mls::KeyPackageBundle,
+    ) -> Result<CrdtOp> {
+        println!("🔑 Adding member {} with provided KeyPackage...", user_id);
+        
+        // Step 1: Deserialize the KeyPackage
+        let provider = self.mls_provider.read().await;
+        let key_package = crate::mls::KeyPackageStore::deserialize_key_package(
+            &key_package_bundle,
+            &provider
+        )?;
+        
+        // Step 2: Add member to MLS group and get messages to distribute
+        let mut manager = self.space_manager.write().await;
+        let (commit_msg, welcome_msg) = manager.add_member_with_mls(
+            &space_id,
+            user_id,
+            role,
+            key_package,
+            &self.user_id,
+            &provider,
+        )?;
+        drop(provider);
+        drop(manager);
+        
+        println!("  ✓ Added to MLS group, epoch rotated");
+        
+        // Step 3: Serialize messages
+        let commit_bytes = commit_msg.to_bytes()
+            .map_err(|e| Error::Serialization(format!("Failed to serialize Commit: {}", e)))?;
+        let welcome_bytes = welcome_msg.to_bytes()
+            .map_err(|e| Error::Serialization(format!("Failed to serialize Welcome: {}", e)))?;
+        
+        // Step 4: Publish Commit to existing members via GossipSub
+        let space_topic = format!("space/{}", hex::encode(&space_id.0[..8]));
+        {
+            let mut network = self.network.write().await;
+            network.publish(&space_topic, commit_bytes).await?;
+        }
+        println!("  ✓ Published Commit to existing members on {}", space_topic);
+        
+        // Step 5: Send Welcome message to new member via their user topic
+        let user_topic = format!("user/{}/welcome", user_id);
+        {
+            let mut network = self.network.write().await;
+            network.publish(&user_topic, welcome_bytes).await?;
+        }
+        println!("  ✓ Sent Welcome message to {} on {}", user_id, user_topic);
+        
+        // Step 6: Create and broadcast the CRDT AddMember operation
+        let mut manager = self.space_manager.write().await;
+        let op = manager.add_member(
+            space_id,
+            user_id,
+            role,
+            self.user_id,
+            &self.keypair,
+        )?;
+        drop(manager);
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        println!("✅ Member {} added with MLS (P2P KeyPackage)", user_id);
+        
+        Ok(op)
+    }
+    
     /// Add a member to a Space with full MLS integration
     /// 
     /// This method:
@@ -1109,9 +1349,10 @@ impl Client {
         let key_package_bundle = self.fetch_key_package_from_dht(&user_id).await?;
         
         // Step 2: Deserialize the KeyPackage
+        let provider = self.mls_provider.read().await;
         let key_package = crate::mls::KeyPackageStore::deserialize_key_package(
             &key_package_bundle,
-            &self.mls_provider
+            &provider
         )?;
         
         // Step 3: Add member to MLS group and get messages to distribute
@@ -1122,7 +1363,7 @@ impl Client {
             role,
             key_package,
             &self.user_id,
-            &self.mls_provider,
+            &provider,
         )?;
         
         // Step 4: Create CRDT operation
@@ -1175,13 +1416,15 @@ impl Client {
         user_id: UserId,
     ) -> Result<CrdtOp> {
         let mut manager = self.space_manager.write().await;
+        let provider = self.mls_provider.read().await;
         let op = manager.remove_member(
             space_id,
             user_id,
             self.user_id,
             &self.keypair,
-            &self.mls_provider,
+            &provider,
         )?;
+        drop(provider);
         
         // Store operation
         self.store.put_op(&op)?;
@@ -1634,8 +1877,36 @@ impl Client {
     
     /// Broadcast a CRDT operation to a specific topic
     async fn broadcast_op_on_topic(&self, op: &CrdtOp, topic: &str) -> Result<()> {
-        let data = minicbor::to_vec(op)
+        // Serialize the operation
+        let op_bytes = minicbor::to_vec(op)
             .map_err(|e| Error::Serialization(format!("Failed to encode operation: {}", e)))?;
+        
+        // Check if this Space has an MLS group - if so, encrypt the operation
+        let data = {
+            let mut space_manager = self.space_manager.write().await;
+            if let Some(mls_group) = space_manager.get_mls_group_mut(&op.space_id) {
+                // Encrypt the operation as MLS application data
+                let provider = self.mls_provider.read().await;
+                let encrypted_msg = mls_group.encrypt_application_message(&op_bytes, &provider)?;
+                drop(provider);
+                
+                // Serialize the encrypted MLS message
+                let encrypted_bytes = encrypted_msg.to_bytes()
+                    .map_err(|e| Error::Serialization(format!("Failed to serialize MLS message: {}", e)))?;
+                
+                // Format: [0x01][space_id (32 bytes)][encrypted_data]
+                // The space_id is needed for decryption on the receive side
+                let mut data = vec![0x01];
+                data.extend_from_slice(&op.space_id.0);
+                data.extend_from_slice(&encrypted_bytes);
+                data
+            } else {
+                // No MLS group - send plaintext with marker (0x00)
+                let mut data = vec![0x00];
+                data.extend_from_slice(&op_bytes);
+                data
+            }
+        };
         
         let mut network = self.network.write().await;
         

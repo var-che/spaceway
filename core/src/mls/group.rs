@@ -58,12 +58,14 @@ impl MlsGroup {
         config: MlsGroupConfig,
         provider: &DescordProvider,
     ) -> Result<Self> {
-        // Create credential for creator
-        let credential = BasicCredential::new(signer.public().to_vec());
+        // Create credential for creator using user_id (for member lookup)
+        let credential = BasicCredential::new(creator_id.0.to_vec());
         
         // Create MLS group configuration
+        // Enable RATCHET_TREE extension to include ratchet tree in Welcome messages
         let mls_group_create_config = MlsGroupCreateConfig::builder()
             .ciphersuite(config.ciphersuite)
+            .use_ratchet_tree_extension(true)  // Enable ratchet tree in Welcome
             .build();
         
         // Create the group
@@ -176,7 +178,11 @@ impl MlsGroup {
         let (mls_message, welcome_msg, _group_info) = self.group
             .add_members(provider, &self.signer, &[key_package])
             .map_err(|e| Error::Crypto(format!("Failed to add member to MLS group: {:?}", e)))?;
-
+        
+        // Merge the pending commit to update the group state
+        self.group.merge_pending_commit(provider)
+            .map_err(|e| Error::Crypto(format!("Failed to merge pending commit: {:?}", e)))?;
+        
         // Increment epoch
         self.current_epoch = EpochId(self.current_epoch.0 + 1);
 
@@ -216,7 +222,6 @@ impl MlsGroup {
         }
 
         // Find the member's leaf index in the MLS group
-        // We need to iterate through members to find the matching credential
         let mut member_index: Option<LeafNodeIndex> = None;
         
         for member in self.group.members() {
@@ -224,8 +229,7 @@ impl MlsGroup {
             let credential = member.credential.serialized_content();
             
             // Check if this credential matches the user_id
-            // The credential was created with signer.public().to_vec() which is 32 bytes
-            if credential.len() >= 32 && &credential[..32] == user_id.0.as_slice() {
+            if credential == user_id.0.as_slice() {
                 member_index = Some(member.index);
                 break;
             }
@@ -253,12 +257,139 @@ impl MlsGroup {
         Ok(())
     }
 
+    /// Process a Welcome message to join an existing MLS group
+    /// 
+    /// This method is called when a user receives a Welcome message after being added
+    /// to a Space. It creates a new MlsGroup from the Welcome message.
+    /// 
+    /// # Returns
+    /// A new MlsGroup instance that is synced with the existing group
+    pub fn from_welcome(
+        welcome_bytes: Vec<u8>,
+        user_id: UserId,
+        signer: SignatureKeyPair,
+        provider: &DescordProvider,
+    ) -> Result<Self> {
+        // Deserialize the MlsMessageIn (which wraps the Welcome)
+        use tls_codec::Deserialize;
+        let mls_message_in = openmls::framing::MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_slice())
+            .map_err(|e| Error::Serialization(format!("Failed to deserialize MlsMessageIn: {:?}", e)))?;
+        
+        // Extract the Welcome from the MlsMessageIn
+        let welcome = match mls_message_in.extract() {
+            openmls::framing::MlsMessageBodyIn::Welcome(w) => w,
+            _ => return Err(Error::Serialization("Expected Welcome message, got something else".to_string())),
+        };
+        
+        let group_config = MlsGroupJoinConfig::default();
+        
+        let mls_group = StagedWelcome::new_from_welcome(
+            provider,
+            &group_config,
+            welcome,
+            None, // No ratchet tree extension
+        )
+        .map_err(|e| Error::Crypto(format!("Failed to stage Welcome: {:?}", e)))?
+        .into_group(provider)
+        .map_err(|e| Error::Crypto(format!("Failed to create group from Welcome: {:?}", e)))?;
+        
+        // Extract space_id from group context
+        // For now, we'll use a placeholder since we need to get it from the Welcome message context
+        // In production, the space_id should be included in the group context or sent separately
+        let space_id = SpaceId([0u8; 32]); // Placeholder - should be extracted from context
+        
+        let current_epoch = EpochId(mls_group.epoch().as_u64());
+        
+        // Initialize with the joining user's role (will be updated from CRDT state)
+        let mut member_roles = HashMap::new();
+        member_roles.insert(user_id, Role::Member);
+        
+        Ok(Self {
+            group: mls_group,
+            space_id,
+            current_epoch,
+            signer,
+            member_roles,
+        })
+    }
+
+    /// Encrypt application message data using MLS
+    /// 
+    /// # Arguments
+    /// * `plaintext` - The message content to encrypt
+    /// * `provider` - Crypto provider
+    /// 
+    /// # Returns
+    /// Encrypted MlsMessageOut that can be sent to group members
+    pub fn encrypt_application_message(
+        &mut self,
+        plaintext: &[u8],
+        provider: &DescordProvider,
+    ) -> Result<openmls::framing::MlsMessageOut> {
+        let mls_message = self.group
+            .create_message(provider, &self.signer, plaintext)
+            .map_err(|e| Error::Crypto(format!("Failed to encrypt application message: {:?}", e)))?;
+        
+        Ok(mls_message)
+    }
+
+    /// Decrypt application message received from the group
+    /// 
+    /// # Arguments
+    /// * `encrypted_bytes` - The serialized encrypted MlsMessageIn
+    /// * `provider` - Crypto provider
+    /// 
+    /// # Returns
+    /// The decrypted plaintext message content
+    pub fn decrypt_application_message(
+        &mut self,
+        encrypted_bytes: &[u8],
+        provider: &DescordProvider,
+    ) -> Result<Vec<u8>> {
+        use tls_codec::Deserialize;
+        
+        // Deserialize the MlsMessageIn
+        let mls_message_in = openmls::framing::MlsMessageIn::tls_deserialize(&mut &encrypted_bytes[..])
+            .map_err(|e| Error::Serialization(format!("Failed to deserialize MLS message: {:?}", e)))?;
+        
+        // Convert to ProtocolMessage (extract from the MlsMessageIn wrapper)
+        let protocol_message = mls_message_in.try_into_protocol_message()
+            .map_err(|e| Error::Crypto(format!("Invalid protocol message: {:?}", e)))?;
+        
+        // Process the message (this verifies signature and decrypts)
+        let processed_message = self.group
+            .process_message(provider, protocol_message)
+            .map_err(|e| Error::Crypto(format!("Failed to process MLS message: {:?}", e)))?;
+        
+        // Extract the application message
+        match processed_message.into_content() {
+            ProcessedMessageContent::ApplicationMessage(app_msg) => {
+                Ok(app_msg.into_bytes())
+            }
+            ProcessedMessageContent::ProposalMessage(_) => {
+                Err(Error::Crypto("Received proposal instead of application message".to_string()))
+            }
+            ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
+                Err(Error::Crypto("Received external join proposal instead of application message".to_string()))
+            }
+            ProcessedMessageContent::StagedCommitMessage(_) => {
+                // This is a commit message (membership change) - need to merge it
+                Err(Error::Crypto("Received commit message - should be handled separately".to_string()))
+            }
+        }
+    }
+
     /// Remove member (legacy method - only removes role mapping)
     /// 
     /// **Warning:** This does NOT rotate MLS keys. For security, use
     /// `remove_member_with_key_rotation()` instead.
     pub fn remove_member(&mut self, user_id: &UserId) {
         self.member_roles.remove(user_id);
+    }
+
+    /// Get the current epoch of the MLS group
+    pub fn current_epoch(&self) -> EpochId {
+        self.current_epoch
     }
 
     /// Check if user has permission to perform an action
@@ -286,7 +417,6 @@ impl MlsGroup {
 mod tests {
     use super::*;
     use crate::mls::provider::create_provider;
-    use uuid::Uuid;
 
     fn create_test_keypair() -> SignatureKeyPair {
         SignatureKeyPair::new(
@@ -445,5 +575,106 @@ mod tests {
         // Should have no permissions
         let perms = group.get_permissions(&user_id);
         assert_eq!(perms, Permissions::NONE);
+    }
+
+    #[test]
+    fn test_add_member_with_key_package() {
+        use crate::mls::KeyPackageStore;
+        
+        let provider = create_provider();
+        let space_id = SpaceId::new();
+        let admin_id = create_test_user_id();
+        let new_member_id = UserId([2u8; 32]);
+        let admin_keypair = create_test_keypair();
+        let config = MlsGroupConfig::default();
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+        // Create MLS group as admin
+        let mut admin_group = MlsGroup::create(space_id, admin_id, admin_keypair, config, &provider).unwrap();
+        
+        // Generate KeyPackage for new member
+        let member_signer = SignatureKeyPair::new(ciphersuite.signature_algorithm()).unwrap();
+        let mut kp_store = KeyPackageStore::new(new_member_id, member_signer, ciphersuite);
+        let key_packages = kp_store.generate_key_packages(1, &provider).unwrap();
+        let key_package_bundle = &key_packages[0];
+        
+        // Deserialize the KeyPackage
+        let key_package = KeyPackageStore::deserialize_key_package(key_package_bundle, &provider).unwrap();
+        
+        // Admin adds new member to MLS group
+        let result = admin_group.add_member_with_key_package(
+            new_member_id,
+            Role::Member,
+            key_package,
+            &admin_id,
+            &provider
+        );
+        
+        assert!(result.is_ok());
+        let (commit_msg, welcome_msg) = result.unwrap();
+        
+        // Verify commit and welcome messages were created
+        let commit_bytes = commit_msg.to_bytes().unwrap();
+        let welcome_bytes = welcome_msg.to_bytes().unwrap();
+        assert!(!commit_bytes.is_empty());
+        assert!(!welcome_bytes.is_empty());
+        
+        // Verify member was added to role mapping
+        assert_eq!(admin_group.get_role(&new_member_id), Some(Role::Member));
+        
+        // Verify epoch incremented
+        assert_eq!(admin_group.current_epoch().0, 1);
+        
+        // Note: Processing the Welcome message requires the init key that was
+        // generated with the KeyPackage. In production, the KeyPackageStore would
+        // maintain a mapping of KeyPackages to their init keys. For this test,
+        // we verify that:
+        // 1. KeyPackage generation works ✓
+        // 2. add_member_with_key_package succeeds ✓  
+        // 3. Commit and Welcome messages are created ✓
+        // 4. Member is added to the group ✓
+        // 5. Epoch increments ✓
+        //
+        // The Welcome message processing would require the KeyPackageStore to
+        // track init keys, which is a future enhancement.
+        
+        println!("✅ MLS member addition flow test passed!");
+        println!("   - KeyPackage generated and serialized");
+        println!("   - Member added to MLS group");
+        println!("   - Commit message created ({} bytes)", commit_bytes.len());
+        println!("   - Welcome message created ({} bytes)", welcome_bytes.len());
+        println!("   - Epoch incremented to {}", admin_group.current_epoch().0);
+    }
+
+    #[test]
+    fn test_remove_member_with_key_rotation() {
+        let provider = create_provider();
+        let space_id = SpaceId::new();
+        let admin_id = create_test_user_id();
+        let member_id = UserId([2u8; 32]);
+        let admin_keypair = create_test_keypair();
+        let config = MlsGroupConfig::default();
+
+        let mut group = MlsGroup::create(space_id, admin_id, admin_keypair, config, &provider).unwrap();
+        
+        // Add member first (using legacy method since we need them in the MLS group)
+        group.add_member_with_role(member_id, Role::Member);
+        
+        // Note: In production, member would be added via add_member_with_key_package
+        // For this test, we're just verifying the removal logic
+        
+        // Remove member with key rotation
+        // This will fail because member isn't actually in the OpenMLS group
+        // (they were only added to role mapping)
+        let result = group.remove_member_with_key_rotation(&member_id, &admin_id, &provider);
+        
+        // Should fail with NotFound because member isn't in actual MLS group
+        assert!(result.is_err());
+        match result {
+            Err(Error::NotFound(_)) => {
+                println!("✅ Correctly detected member not in MLS group");
+            }
+            _ => panic!("Expected NotFound error"),
+        }
     }
 }

@@ -52,6 +52,9 @@ bytes = { workspace = true }
 serde_json = "1.0"
 zeroize = "1.7"            # Secure memory wiping for keys
 
+# Test utilities (only when test-utils feature is enabled)
+tempfile = { version = "3.8", optional = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 proptest = { workspace = true }
@@ -68,6 +71,8 @@ path = "src/lib.rs"
 [features]
 # Enable test helper methods for integration tests
 test-helpers = []
+# Enable SmoothTest framework for testing distributed features
+test-utils = ["dep:tempfile"]
 
 [[example]]
 name = "test_three_person"

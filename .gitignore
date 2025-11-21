@@ -19,6 +19,13 @@ storage/
 .DS_Store
 Thumbs.db
 
+# Nix build outputs and direnv
+result
+.direnv/
+
+# Application data
+descord-data/
+
 # Ignore test artifacts
 *.profraw
 *.profdata
@@ -30,7 +37,12 @@ Thumbs.db
 tmp/
 temp/
 
-# Ignore test data
-core/test-data
-core/test-alice-data
-core/test-bob-data
+# Ignore test data and results
+tests/data/
+core/tests/test_data/
+*.key
+*-data/
+*.history
+*_STATUS.txt
+*_RESULTS.txt
+SUCCESS.txt

@@ -97,16 +97,34 @@ async fn test_kick_member_mls_security() {
     println!("  Waiting for Space operations to sync to Bob...");
     sleep(Duration::from_secs(4)).await;
 
-    // Step 3: Alice adds Bob as a member directly (simpler than invite flow)
-    println!("\n📝 Step 3: Alice adds Bob as a member");
+    // Step 3: Alice adds Bob as a member with MLS encryption (P2P KeyPackage exchange)
+    println!("\n📝 Step 3: Alice adds Bob as a member with MLS");
     let bob_user_id = bob_keypair.user_id();
-    alice.add_member(space.id, bob_user_id, Role::Member).await.unwrap();
-    println!("  ✓ Alice added Bob to the Space");
     
-    // Wait for AddMember operation to sync
+    // Bob subscribes to the space topic first (to receive Commit message)
+    bob.subscribe_to_space(&space.id).await.unwrap();
+    println!("  ✓ Bob subscribed to Space topic");
+    
+    // Give GossipSub time to propagate subscription
     sleep(Duration::from_secs(2)).await;
+    
+    // Bob provides his KeyPackage directly to Alice (P2P exchange, no DHT)
+    let bob_keypackage = bob.get_key_package_bundle().await.unwrap();
+    println!("  ✓ Bob provided KeyPackage to Alice");
+    
+    // Alice adds Bob with the KeyPackage
+    alice.add_member_with_key_package_bundle(
+        space.id, 
+        bob_user_id, 
+        Role::Member,
+        bob_keypackage
+    ).await.unwrap();
+    println!("  ✓ Alice added Bob to Space with MLS");
+    
+    // Wait for MLS messages to propagate via GossipSub
+    sleep(Duration::from_secs(3)).await;
 
-    // Step 4: Alice sends more messages (Bob should see these)
+    // Step 4: Alice sends more messages (Bob should see these via GossipSub)
     println!("\n📝 Step 4: Alice sends messages while Bob is a member");
     let (msg2, _) = alice.post_message(
         space.id,
@@ -124,9 +142,9 @@ async fn test_kick_member_mls_security() {
 
     sleep(Duration::from_secs(2)).await;
 
-    // Bob checks messages
+    // Bob checks messages (should only see messages sent AFTER he subscribed)
     let bob_messages = bob.list_messages(&thread.id).await;
-    println!("  ✓ Bob sees {} messages (should be at least 3)", bob_messages.len());
+    println!("  ✓ Bob sees {} messages", bob_messages.len());
     
     // Print messages Bob can see
     println!("\n  Bob's view of messages:");
@@ -135,7 +153,10 @@ async fn test_kick_member_mls_security() {
     }
 
     let messages_before_kick = bob_messages.len();
-    assert!(messages_before_kick >= 3, "Bob should see at least 3 messages before being kicked");
+    
+    // Bob should see at least message 2 and 3 (sent after he subscribed)
+    // Note: Message 1 was sent before Bob subscribed, so GossipSub won't deliver it
+    assert!(messages_before_kick >= 2, "Bob should see at least messages 2 and 3 (sent after subscription)");
 
     // Wait for Alice to receive Bob's AddMember confirmation
     println!("\n  Waiting for sync...");

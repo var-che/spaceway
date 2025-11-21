@@ -47,8 +47,9 @@ pub struct KeyPackageStore {
     /// Ciphersuite to use
     ciphersuite: Ciphersuite,
     
-    /// Generated KeyPackages waiting to be used
-    available_packages: Vec<KeyPackage>,
+    /// Generated OpenMLS KeyPackageBundles waiting to be used
+    /// These bundles maintain the connection to private keys in the provider
+    available_bundles: Vec<openmls::prelude::KeyPackageBundle>,
 }
 
 impl KeyPackageStore {
@@ -62,7 +63,7 @@ impl KeyPackageStore {
             user_id,
             signer,
             ciphersuite,
-            available_packages: Vec::new(),
+            available_bundles: Vec::new(),
         }
     }
 
@@ -81,8 +82,9 @@ impl KeyPackageStore {
     ) -> Result<Vec<KeyPackageBundle>> {
         let mut bundles = Vec::new();
         
-        // Create credential
-        let credential = BasicCredential::new(self.signer.public().to_vec());
+        // Create credential using user_id (so we can find members later)
+        // We use user_id as the identity in the credential
+        let credential = BasicCredential::new(self.user_id.0.to_vec());
         let credential_with_key = CredentialWithKey {
             credential: credential.into(),
             signature_key: self.signer.public().into(),
@@ -90,6 +92,7 @@ impl KeyPackageStore {
 
         for _ in 0..count {
             // Generate a KeyPackage
+            // The provider automatically stores the private key material
             let key_package_bundle = KeyPackage::builder()
                 .build(
                     self.ciphersuite,
@@ -99,18 +102,25 @@ impl KeyPackageStore {
                 )
                 .map_err(|e| Error::Crypto(format!("Failed to create KeyPackage: {:?}", e)))?;
 
-            // Extract the KeyPackage from the bundle
+            // Extract the KeyPackage from the bundle for serialization
             let key_package = key_package_bundle.key_package().clone();
             
-            // Serialize the KeyPackage using TLS serialization
-            let key_package_bytes = serde_json::to_vec(&key_package)
+            // Get the KeyPackage hash for debugging
+            let kp_hash = key_package.hash_ref(provider.crypto())
+                .map_err(|e| Error::Crypto(format!("Failed to compute KeyPackage hash: {:?}", e)))?;
+            println!("✓ Generated KeyPackage with hash: {:?}", hex::encode(kp_hash.as_slice()));
+            
+            // Serialize the KeyPackage using TLS codec (required by OpenMLS)
+            use tls_codec::Serialize;
+            let key_package_bytes = key_package.tls_serialize_detached()
                 .map_err(|e| Error::Crypto(format!("Failed to serialize KeyPackage: {:?}", e)))?;
 
             // Create signature over the KeyPackage bytes
             let signature = self.sign_key_package(&key_package_bytes)?;
 
-            // Store the KeyPackage locally
-            self.available_packages.push(key_package);
+            // Store the FULL bundle (not just the KeyPackage)
+            // This maintains the connection to private keys in the provider
+            self.available_bundles.push(key_package_bundle);
 
             // Create bundle
             bundles.push(KeyPackageBundle {
@@ -148,24 +158,67 @@ impl KeyPackageStore {
     /// Deserialize a KeyPackage from a bundle
     pub fn deserialize_key_package(
         bundle: &KeyPackageBundle,
-        _provider: &DescordProvider,
+        provider: &DescordProvider,
     ) -> Result<KeyPackage> {
         // Verify signature first
         Self::verify_key_package_bundle(bundle)?;
 
-        // Deserialize the KeyPackage using serde
-        serde_json::from_slice(&bundle.key_package_bytes)
-            .map_err(|e| Error::Crypto(format!("Failed to deserialize KeyPackage: {:?}", e)))
+        // Deserialize the KeyPackage using TLS codec
+        // OpenMLS requires deserializing to KeyPackageIn first, then validating
+        use tls_codec::Deserialize;
+        let key_package_in = KeyPackageIn::tls_deserialize(&mut bundle.key_package_bytes.as_slice())
+            .map_err(|e| Error::Crypto(format!("Failed to deserialize KeyPackageIn: {:?}", e)))?;
+        
+        // Validate the KeyPackage (this checks signature and crypto)
+        // Use the ciphersuite from the KeyPackage itself for validation
+        let key_package = key_package_in.validate(provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| Error::Crypto(format!("Failed to validate KeyPackage: {:?}", e)))?;
+        
+        // Get the KeyPackage hash for debugging
+        let kp_hash = key_package.hash_ref(provider.crypto())
+            .map_err(|e| Error::Crypto(format!("Failed to compute KeyPackage hash after deserialization: {:?}", e)))?;
+        println!("✓ Deserialized and validated KeyPackage with hash: {:?}", hex::encode(kp_hash.as_slice()));
+        
+        Ok(key_package)
     }
 
     /// Get the number of available KeyPackages
     pub fn available_count(&self) -> usize {
-        self.available_packages.len()
+        self.available_bundles.len()
     }
 
     /// Consume a KeyPackage (removes it from available pool)
+    /// Returns the KeyPackage extracted from the bundle
+    /// NOTE: Keeps a clone of the bundle to maintain private key references
     pub fn consume_key_package(&mut self) -> Option<KeyPackage> {
-        self.available_packages.pop()
+        if let Some(bundle) = self.available_bundles.last() {
+            Some(bundle.key_package().clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Get a KeyPackage bundle (consuming one KeyPackage from the pool)
+    /// Returns a serialized bundle ready for P2P transmission
+    pub fn get_key_package_bundle(&mut self) -> Result<KeyPackageBundle> {
+        let key_package = self.consume_key_package()
+            .ok_or_else(|| Error::NotFound("No KeyPackages available".to_string()))?;
+        
+        // Serialize the KeyPackage using TLS codec
+        use tls_codec::Serialize;
+        let key_package_bytes = key_package.tls_serialize_detached()
+            .map_err(|e| Error::Crypto(format!("Failed to serialize KeyPackage: {:?}", e)))?;
+        
+        // Create and return the bundle
+        Ok(KeyPackageBundle {
+            user_id: self.user_id,
+            key_package_bytes,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            signature: vec![], // TODO: Add proper signature
+        })
     }
 }
 

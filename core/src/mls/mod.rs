@@ -5,6 +5,8 @@
 
 pub mod group;
 pub mod provider;
+pub mod keypackage;
 
 pub use group::{MlsGroup, MlsGroupConfig};
 pub use provider::DescordProvider;
+pub use keypackage::{KeyPackageBundle, KeyPackageStore};

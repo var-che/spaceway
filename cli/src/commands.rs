@@ -65,6 +65,8 @@ impl CommandHandler {
             "send" => self.cmd_send(&parts[1..].join(" ")).await,
             "invite" => self.cmd_invite(&parts[1..]).await,
             "join" => self.cmd_join(&parts[1..]).await,
+            "members" => self.cmd_members().await,
+            "kick" | "remove" => self.cmd_kick(&parts[1..]).await,
             "upload" => self.cmd_upload(&parts[1..]).await,
             "refresh" => self.cmd_refresh().await,
             "help" => self.cmd_help(),
@@ -112,6 +114,8 @@ impl CommandHandler {
         println!("    {} <name> - Create or switch to space", "space".bright_green());
         println!("    {} <space_id> <code> - Join space with invite", "join".bright_green());
         println!("    {} - Create invite for current space", "invite".bright_green());
+        println!("    {} - List members in current space", "members".bright_green());
+        println!("    {} <user_id> - Remove member from current space", "kick".bright_green());
         println!();
         println!("{}", "  Channels & Threads:".bright_yellow());
         println!("    {} - List channels in current space", "channels".bright_green());
@@ -417,6 +421,84 @@ impl CommandHandler {
             }
         }
         println!();
+        Ok(())
+    }
+    
+    async fn cmd_members(&mut self) -> Result<()> {
+        let space_id = match self.current_space {
+            Some(id) => id,
+            None => {
+                ui::print_error("No space selected. Use 'space <name>' first");
+                return Ok(());
+            }
+        };
+        
+        let client = self.client.lock().await;
+        let members = client.list_members(&space_id).await;
+        
+        if members.is_empty() {
+            ui::print_info("No members in this space");
+            return Ok(());
+        }
+        
+        println!();
+        println!("{}", format!("Members in Space ({}):", members.len()).bright_cyan().bold());
+        println!();
+        
+        for (user_id, role) in members {
+            let role_str = match role {
+                descord_core::types::Role::Admin => "Admin".bright_red().bold(),
+                descord_core::types::Role::Moderator => "Moderator".bright_yellow(),
+                descord_core::types::Role::Member => "Member".bright_green(),
+            };
+            println!("  {} [{}]", format!("{:?}", user_id).bright_white(), role_str);
+        }
+        println!();
+        
+        Ok(())
+    }
+    
+    async fn cmd_kick(&mut self, args: &[&str]) -> Result<()> {
+        if args.is_empty() {
+            ui::print_error("Usage: kick <user_id>");
+            ui::print_info("Use 'members' to see user IDs");
+            return Ok(());
+        }
+        
+        let space_id = match self.current_space {
+            Some(id) => id,
+            None => {
+                ui::print_error("No space selected. Use 'space <name>' first");
+                return Ok(());
+            }
+        };
+        
+        // Parse user_id from hex string
+        let user_id_str = args[0];
+        let user_id_hex = user_id_str.trim_start_matches("UserId(").trim_end_matches(')');
+        
+        let decoded = hex::decode(user_id_hex)
+            .context("Invalid user ID hex")?;
+        if decoded.len() != 32 {
+            ui::print_error(&format!("User ID must be 32 bytes (64 hex chars), got {} bytes", decoded.len()));
+            return Ok(());
+        }
+        let mut user_id_bytes = [0u8; 32];
+        user_id_bytes.copy_from_slice(&decoded);
+        let user_id = descord_core::types::UserId(user_id_bytes);
+        
+        ui::print_info(&format!("Removing user {:?} from Space...", user_id));
+        
+        let client = self.client.lock().await;
+        match client.remove_member(space_id, user_id).await {
+            Ok(_) => {
+                ui::print_success(&format!("Successfully removed user {:?}", user_id));
+            }
+            Err(e) => {
+                ui::print_error(&format!("Failed to remove member: {}", e));
+            }
+        }
+        
         Ok(())
     }
 

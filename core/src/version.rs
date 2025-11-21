@@ -12,7 +12,7 @@ pub const VERSION_MAJOR: u32 = 0;
 pub const VERSION_MINOR: u32 = 1;
 
 /// Patch version (bug fixes)
-pub const VERSION_PATCH: u32 = 0;
+pub const VERSION_PATCH: u32 = 1;
 
 /// Protocol version (incremented on wire format changes)
 pub const PROTOCOL_VERSION: u32 = 1;

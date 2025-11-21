@@ -502,6 +502,91 @@ impl SpaceManager {
         Ok(op)
     }
     
+    /// Remove a member from a Space (kick)
+    pub fn remove_member(
+        &mut self,
+        space_id: SpaceId,
+        user_id: UserId,
+        author: UserId,
+        author_keypair: &crate::crypto::signing::Keypair,
+        provider: &DescordProvider,
+    ) -> Result<CrdtOp> {
+        // Check space exists
+        let space = self.spaces.get_mut(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+        
+        // Check author has permission (Admin or Moderator)
+        let author_role = space.get_role(&author)
+            .ok_or_else(|| Error::Permission("Author not in Space".to_string()))?;
+        
+        if !matches!(author_role, Role::Admin | Role::Moderator) {
+            return Err(Error::Permission("Only admins and moderators can remove members".to_string()));
+        }
+        
+        // Can't remove yourself
+        if user_id == author {
+            return Err(Error::Permission("Cannot remove yourself from Space".to_string()));
+        }
+        
+        // Check target user is actually a member
+        if !space.members.contains_key(&user_id) {
+            return Err(Error::NotFound(format!("User {:?} not a member of Space", user_id)));
+        }
+        
+        // Create operation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let mut op = CrdtOp {
+            op_id: OpId(uuid::Uuid::new_v4()),
+            space_id,
+            channel_id: None,
+            thread_id: None,
+            op_type: OpType::RemoveMember(OpPayload::RemoveMember {
+                user_id,
+                reason: None, // Optional reason for removal
+            }),
+            prev_ops: vec![], // TODO: Add causal dependencies
+            author,
+            epoch: space.epoch,
+            hlc: self.hlc.tick(),
+            timestamp: current_time,
+            signature: Signature([0u8; 64]),
+        };
+        
+        // Sign the operation
+        let signing_bytes = op.signing_bytes();
+        op.signature = Signature(author_keypair.sign(&signing_bytes).0);
+        
+        // Apply locally - remove from Space
+        space.remove_member(&user_id);
+        
+        // MLS key rotation: Remove member from MLS group
+        if let Some(mls_group) = self.mls_groups.get_mut(&space_id) {
+            // Remove member and rotate keys
+            match mls_group.remove_member_with_key_rotation(&user_id, &author, provider) {
+                Ok(()) => {
+                    println!("✓ MLS keys rotated - removed member can't decrypt future messages");
+                }
+                Err(e) => {
+                    eprintln!("⚠ Warning: MLS key rotation failed: {}", e);
+                    eprintln!("  Removed member may still be able to decrypt new messages");
+                    // Continue anyway - the member is still removed from the Space
+                }
+            }
+        } else {
+            eprintln!("⚠ Warning: No MLS group found for Space");
+            eprintln!("  This Space may not have E2E encryption enabled");
+        }
+        
+        self.operations.insert(op.op_id, op.clone());
+        self.validator.apply_op(&op);
+        
+        Ok(op)
+    }
+    
     /// Get a Space by ID
     pub fn get_space(&self, space_id: &SpaceId) -> Option<&Space> {
         self.spaces.get(space_id)
@@ -850,6 +935,34 @@ impl SpaceManager {
             }
         } else {
             Err(Error::Crdt("Invalid operation type for process_use_invite".to_string()))
+        }
+    }
+    
+    /// Process a RemoveMember operation from the network
+    pub fn process_remove_member(&mut self, op: &CrdtOp) -> Result<()> {
+        if let OpType::RemoveMember(OpPayload::RemoveMember { user_id, .. }) = &op.op_type {
+            // Validate the operation
+            match self.validator.validate(op, &self.operations) {
+                ValidationResult::Accept => {
+                    // Apply the operation
+                    if let Some(space) = self.spaces.get_mut(&op.space_id) {
+                        // Remove member
+                        space.remove_member(user_id);
+                        self.operations.insert(op.op_id, op.clone());
+                        self.validator.apply_op(op);
+                    }
+                    Ok(())
+                }
+                ValidationResult::Buffered(_) => {
+                    // TODO: Properly handle buffering with missing_deps
+                    Ok(())
+                }
+                ValidationResult::Reject(_) => {
+                    Err(Error::Rejected("Operation validation failed".to_string()))
+                }
+            }
+        } else {
+            Err(Error::Crdt("Invalid operation type for process_remove_member".to_string()))
         }
     }
 }

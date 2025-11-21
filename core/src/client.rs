@@ -84,6 +84,9 @@ pub struct Client {
     /// MLS provider
     mls_provider: DescordProvider,
     
+    /// KeyPackage store for MLS member addition
+    keypackage_store: Arc<RwLock<crate::mls::KeyPackageStore>>,
+    
     /// Current relay information
     current_relay: Arc<RwLock<Option<crate::network::relay::RelayInfo>>>,
     
@@ -121,6 +124,21 @@ impl Client {
         // Create MLS provider
         let mls_provider = create_provider();
         
+        // Create MLS signer and KeyPackage store
+        use openmls::prelude::*;
+        use openmls_basic_credential::SignatureKeyPair;
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let mls_signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+            .map_err(|e| crate::Error::Crypto(format!("Failed to create MLS signer: {:?}", e)))?;
+        
+        let mut kp_store = crate::mls::KeyPackageStore::new(user_id, mls_signer, ciphersuite);
+        
+        // Generate initial batch of KeyPackages (10 packages)
+        let _key_packages = kp_store.generate_key_packages(10, &mls_provider)?;
+        println!("✓ Generated {} KeyPackages for user {}", 10, user_id);
+        
+        let keypackage_store = Arc::new(RwLock::new(kp_store));
+        
         // Create GossipSub metrics
         let gossip_metrics = Arc::new(crate::network::GossipMetrics::new());
         
@@ -135,6 +153,7 @@ impl Client {
             network_rx,
             store,
             mls_provider,
+            keypackage_store,
             current_relay: Arc::new(RwLock::new(None)),
             rotation_task: Arc::new(RwLock::new(None)),
             gossip_metrics,
@@ -953,6 +972,81 @@ impl Client {
         Ok(index.blob_hashes)
     }
     
+    // ============ MLS KeyPackage Management ============
+    
+    /// Publish this user's KeyPackages to the DHT
+    /// 
+    /// Other users can fetch these KeyPackages to add this user to their MLS groups.
+    pub async fn publish_key_packages_to_dht(&self) -> Result<()> {
+        use sha2::{Sha256, Digest};
+        
+        // Get KeyPackages from store
+        let mut kp_store = self.keypackage_store.write().await;
+        let bundles = kp_store.generate_key_packages(5, &self.mls_provider)?;
+        drop(kp_store);
+        
+        if bundles.is_empty() {
+            return Ok(());
+        }
+        
+        // Compute DHT key: SHA256("keypackage:" + user_id_hex)
+        let user_id_hex = hex::encode(&self.user_id.0);
+        let mut hasher = Sha256::new();
+        hasher.update(b"keypackage:");
+        hasher.update(user_id_hex.as_bytes());
+        let dht_key_hash = hasher.finalize();
+        let mut dht_key = Vec::new();
+        dht_key.extend_from_slice(&dht_key_hash[..32]);
+        
+        // Serialize all bundles
+        let bundles_bytes = serde_json::to_vec(&bundles)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize KeyPackages: {}", e)))?;
+        
+        // Store in DHT
+        let mut network = self.network.write().await;
+        network.dht_put(dht_key, bundles_bytes).await?;
+        
+        println!("✓ Published {} KeyPackages to DHT for user {}", bundles.len(), self.user_id);
+        
+        Ok(())
+    }
+    
+    /// Fetch a user's KeyPackages from the DHT
+    /// 
+    /// Returns one KeyPackageBundle that can be used to add the user to an MLS group.
+    pub async fn fetch_key_package_from_dht(&self, user_id: &UserId) -> Result<crate::mls::KeyPackageBundle> {
+        use sha2::{Sha256, Digest};
+        
+        // Compute DHT key
+        let user_id_hex = hex::encode(&user_id.0);
+        let mut hasher = Sha256::new();
+        hasher.update(b"keypackage:");
+        hasher.update(user_id_hex.as_bytes());
+        let dht_key_hash = hasher.finalize();
+        let mut dht_key = Vec::new();
+        dht_key.extend_from_slice(&dht_key_hash[..32]);
+        
+        // Fetch from DHT
+        let mut network = self.network.write().await;
+        let values = network.dht_get(dht_key).await?;
+        
+        if values.is_empty() {
+            return Err(Error::NotFound(format!("No KeyPackages found for user {}", user_id)));
+        }
+        
+        // Deserialize bundles
+        let bundles: Vec<crate::mls::KeyPackageBundle> = serde_json::from_slice(&values[0])
+            .map_err(|e| Error::Serialization(format!("Failed to deserialize KeyPackages: {}", e)))?;
+        
+        if bundles.is_empty() {
+            return Err(Error::NotFound(format!("No KeyPackages available for user {}", user_id)));
+        }
+        
+        // Return the first bundle (in production, we'd consume it)
+        println!("✓ Fetched KeyPackage for user {} from DHT", user_id);
+        Ok(bundles[0].clone())
+    }
+    
     /// Get a specific invite
     pub async fn get_invite(&self, space_id: &SpaceId, invite_id: &InviteId) -> Option<Invite> {
         let manager = self.space_manager.read().await;
@@ -994,6 +1088,43 @@ impl Client {
         self.broadcast_op(&op).await?;
         
         Ok(op)
+    }
+    
+    /// Remove a member from a Space (kick)
+    /// 
+    /// This removes the member from the Space and triggers MLS key rotation
+    /// so the kicked member can no longer decrypt new messages.
+    pub async fn remove_member(
+        &self,
+        space_id: SpaceId,
+        user_id: UserId,
+    ) -> Result<CrdtOp> {
+        let mut manager = self.space_manager.write().await;
+        let op = manager.remove_member(
+            space_id,
+            user_id,
+            self.user_id,
+            &self.keypair,
+            &self.mls_provider,
+        )?;
+        
+        // Store operation
+        self.store.put_op(&op)?;
+        
+        // Broadcast operation
+        self.broadcast_op(&op).await?;
+        
+        Ok(op)
+    }
+    
+    /// List all members of a Space
+    pub async fn list_members(&self, space_id: &SpaceId) -> Vec<(UserId, Role)> {
+        let manager = self.space_manager.read().await;
+        if let Some(space) = manager.get_space(space_id) {
+            space.members.iter().map(|(uid, role)| (*uid, *role)).collect()
+        } else {
+            vec![]
+        }
     }
     
     /// Create a Channel in a Space
@@ -1532,6 +1663,10 @@ impl Client {
             crate::crdt::OpType::UseInvite(_) => {
                 let mut manager = self.space_manager.write().await;
                 manager.process_use_invite(&op)?;
+            }
+            crate::crdt::OpType::RemoveMember(_) => {
+                let mut manager = self.space_manager.write().await;
+                manager.process_remove_member(&op)?;
             }
             crate::crdt::OpType::CreateChannel(_) => {
                 let mut manager = self.channel_manager.write().await;

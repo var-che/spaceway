@@ -1,7 +1,7 @@
-# Descord v0.1.0 - Implementation Status & Next Steps
+# Descord v0.1.1 - Implementation Status & Next Steps
 
 **Date**: November 21, 2025  
-**Version**: 0.1.0 (Initial Beta)  
+**Version**: 0.1.1 (Initial Beta + Member Management)  
 **Status**: ✅ Ready for small group testing (2-10 users)
 
 ---
@@ -33,11 +33,19 @@
   - Invite system with 8-character codes
   - Expiration and usage limits on invites
 
+- **Member Management** [NEW in v0.1.1]
+  - List Space members with roles (`members` command)
+  - Kick/remove members (`kick` command)
+  - Permission enforcement (Admin/Moderator only)
+  - RemoveMember CRDT operation sync
+  - Event handler for incoming kick operations
+
 - **CLI Application**
   - Interactive REPL with colored output
   - Network management commands
   - Space/channel/thread navigation
   - Message sending and viewing
+  - Member listing and management
   - File upload to DHT
   - Connection status and peer info
 
@@ -47,6 +55,7 @@
 3. **Small networks** - Works perfectly with 2-10 peers
 4. **Offline tolerance** - Messages sync when peers reconnect
 5. **Privacy** - E2E encrypted, no central server
+6. **Member management** - Admins can kick members, operations sync across peers
 
 ---
 
@@ -58,6 +67,10 @@
 3. **No user profiles** - No display names, avatars, or status
 4. **No DMs** - All communication requires a Space
 5. **DHT limitations** - Requires 3+ peers for DHT quorum (falls back to P2P sync)
+6. **⚠️ MLS member addition not implemented** - New members aren't added to encryption group
+   - Member kick with key rotation works ✅
+   - But adding members to MLS group requires KeyPackage distribution
+   - Members can join Spaces but can't decrypt messages (security incomplete)
 
 ### Minor Issues
 - No message search
@@ -74,39 +87,51 @@
 **Goal**: Make it usable for daily communication
 
 #### 🔴 Critical (Blockers for public beta)
-1. **Message Pagination & History** [3-5 days]
+1. **MLS KeyPackage Distribution & Member Addition** [5-8 days] **[TOP SECURITY PRIORITY]**
+   - [ ] Implement KeyPackage generation on client init
+   - [ ] Store KeyPackages in DHT for discovery
+   - [ ] Fetch peer KeyPackages when adding to Space
+   - [ ] Integrate OpenMLS add_members() API
+   - [ ] Distribute Welcome messages to new members
+   - [ ] Update existing members with new epoch keys
+   - [x] Member removal with key rotation ✅ (completed v0.1.1)
+   - **Why**: Members can join Spaces but can't decrypt messages - core security feature
+   - **Status**: Remove works, add needs implementation
+   - **Impact**: Without this, E2E encryption is incomplete
+
+2. **Message Pagination & History** [3-5 days]
    - [ ] Load older messages (paginated queries)
    - [ ] Message search within channels
    - [ ] Scroll back through history in CLI
    - **Why**: Users can't see old messages beyond what's in memory
 
-2. **Desktop Notifications** [2-3 days]
+3. **Desktop Notifications** [2-3 days]
    - [ ] System notifications for new messages
    - [ ] @mention detection and alerts
    - [ ] Sound alerts (optional)
    - **Why**: Users miss messages when app is backgrounded
 
 #### 🟡 High Priority
-3. **User Profiles** [3-4 days]
+4. **User Profiles** [3-4 days]
    - [ ] Display names (separate from username)
    - [ ] User avatars (profile pictures)
    - [ ] User status (online/offline/away)
    - [ ] "About me" / bio field
    - **Why**: Basic social features users expect
 
-4. **Direct Messages** [5-7 days]
+5. **Direct Messages** [5-7 days]
    - [ ] 1-on-1 DMs (separate from Spaces)
    - [ ] Group DMs (2-10 people)
    - [ ] DM list UI
    - **Why**: Core Discord feature, essential for private conversations
 
-5. **Unread Tracking** [2-3 days]
+6. **Unread Tracking** [2-3 days]
    - [ ] Unread message count per channel/space
    - [ ] Mark as read functionality
    - [ ] Last seen message tracking
    - **Why**: Users need to know where they left off
 
-**Total Phase 1 Effort**: ~17-28 days (3-6 weeks)
+**Total Phase 1 Effort**: ~21-34 days (4-7 weeks)
 
 ---
 

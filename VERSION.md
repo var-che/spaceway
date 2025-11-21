@@ -8,6 +8,44 @@
 
 ---
 
+## 0.1.1 - Member Management (November 21, 2025)
+
+**Status**: Beta - Member management commands added
+
+### New Features ✨
+- **Member Management CLI Commands**
+  - `members` - List all members in current Space with roles
+  - `kick <user_id>` - Remove member from Space (Admin/Moderator only)
+  - Permission enforcement (only Admin/Moderator can kick)
+  
+- **Backend Implementation**
+  - `Client::list_members()` API
+  - `Client::remove_member()` API  
+  - `RemoveMember` CRDT operation
+  - Event handler for incoming RemoveMember operations
+  - `SpaceManager::process_remove_member()` processor
+  
+- **MLS Group Updates**
+  - Added `remove_member_with_key_rotation()` method (documented)
+  - Security properties documented
+  - TODO markers for full OpenMLS integration
+
+### Known Limitations ⚠️
+- **MLS key rotation not yet integrated**
+  - Kicked members can't send messages (permission enforced) ✅
+  - Kicked members CAN still decrypt new messages (security gap) ❌
+  - Full MLS integration planned for v0.2.0
+
+### Bug Fixes
+- None (feature release)
+
+### Documentation
+- Added `MEMBER_MANAGEMENT_GUIDE.md` with usage examples
+- Added `KICK_MEMBER_IMPLEMENTATION.md` with technical details
+- Updated `STATUS.md` with MLS integration priority
+
+---
+
 ## 0.1.0 - Initial Beta (November 21, 2025)
 
 **Status**: Beta - Ready for small group testing (2-10 users)
@@ -59,9 +97,10 @@
 ## Upcoming Versions
 
 ### 0.2.0 - Public Beta (Target: December 2025)
-**Focus**: Essential features for usability
+**Focus**: Security completion + Essential features
 
 **Planned Features**:
+- **MLS key rotation on member removal** (HIGH PRIORITY - security gap)
 - Message pagination and history
 - Desktop notifications
 - User profiles with avatars
@@ -69,7 +108,7 @@
 - Improved permissions system
 - Unread message tracking
 
-**Estimated Timeline**: 3-6 weeks
+**Estimated Timeline**: 4-7 weeks
 
 ---
 

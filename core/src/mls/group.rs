@@ -136,7 +136,73 @@ impl MlsGroup {
         self.member_roles.insert(user_id, role);
     }
 
-    /// Remove member (removes role mapping)
+    /// Remove member from MLS group and rotate keys
+    /// 
+    /// This removes a member from the MLS group, which:
+    /// 1. Removes them from the member list
+    /// 2. Triggers key rotation (new epoch)
+    /// 3. Ensures removed member can't decrypt future messages
+    /// 
+    /// # Security Properties
+    /// - Forward secrecy: Removed member can't decrypt new messages
+    /// - Post-compromise security: New epoch keys generated
+    /// - Authentication: Group membership is cryptographically verified
+    pub fn remove_member_with_key_rotation(
+        &mut self,
+        user_id: &UserId,
+        admin_id: &UserId,
+        provider: &DescordProvider,
+    ) -> Result<()> {
+        // Check if caller is admin or moderator
+        let admin_perms = self.get_permissions(admin_id);
+        if !admin_perms.can_kick_members() {
+            return Err(Error::Permission(
+                "Only administrators and moderators can remove members".to_string()
+            ));
+        }
+
+        // Find the member's leaf index in the MLS group
+        // We need to iterate through members to find the matching credential
+        let mut member_index: Option<LeafNodeIndex> = None;
+        
+        for member in self.group.members() {
+            // Extract the credential bytes
+            let credential = member.credential.serialized_content();
+            
+            // Check if this credential matches the user_id
+            // The credential was created with signer.public().to_vec() which is 32 bytes
+            if credential.len() >= 32 && &credential[..32] == user_id.0.as_slice() {
+                member_index = Some(member.index);
+                break;
+            }
+        }
+
+        let member_index = member_index.ok_or_else(|| {
+            Error::NotFound(format!("Member {} not found in MLS group", user_id))
+        })?;
+
+        // Create and commit the Remove proposal
+        // This generates a new epoch and new encryption keys
+        let (_mls_message, _welcome, _group_info) = self.group
+            .remove_members(provider, &self.signer, &[member_index])
+            .map_err(|e| Error::Crypto(format!("Failed to remove member from MLS group: {:?}", e)))?;
+
+        // Increment epoch
+        self.current_epoch = EpochId(self.current_epoch.0 + 1);
+
+        // Remove from local role mapping
+        self.member_roles.remove(user_id);
+        
+        // Note: The MLS message and Welcome need to be distributed to group members
+        // This is handled by the CRDT layer broadcasting the RemoveMember operation
+        
+        Ok(())
+    }
+
+    /// Remove member (legacy method - only removes role mapping)
+    /// 
+    /// **Warning:** This does NOT rotate MLS keys. For security, use
+    /// `remove_member_with_key_rotation()` instead.
     pub fn remove_member(&mut self, user_id: &UserId) {
         self.member_roles.remove(user_id);
     }

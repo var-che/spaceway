@@ -22,7 +22,6 @@ use libp2p::{
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
-use std::thread;
 
 use crate::{Error, Result};
 
@@ -140,11 +139,11 @@ struct NetworkWorker {
 impl NetworkNode {
     /// Create a new network node with command/event channels
     pub fn new() -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
-        Self::new_with_config(vec![])
+        Self::new_with_config(vec![], vec![])
     }
     
-    /// Create a new network node with bootstrap peers
-    pub fn new_with_config(bootstrap_peers: Vec<String>) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
+    /// Create a new network node with bootstrap peers and listen addresses
+    pub fn new_with_config(bootstrap_peers: Vec<String>, listen_addrs: Vec<String>) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
         // Generate identity
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
@@ -176,9 +175,9 @@ impl NetworkNode {
             // Only send to mesh peers (reduces metadata leakage)
             .flood_publish(false)
             
-            // Mesh configuration for reliability
-            .mesh_n(6)        // Target 6 peers in mesh
-            .mesh_n_low(4)    // Min 4 peers
+            // Mesh configuration for small networks (2+ peers)
+            .mesh_n(2)        // Target 2 peers in mesh (works with 2 peers)
+            .mesh_n_low(1)    // Min 1 peer (allows 2-peer networks)
             .mesh_n_high(12)  // Max 12 peers
             
             // Message caching for late joiners
@@ -248,6 +247,19 @@ impl NetworkNode {
             pending_put_queries: HashMap::new(),
         };
         
+        // Listen on configured addresses or default
+        if listen_addrs.is_empty() {
+            let default_addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
+            worker.swarm.listen_on(default_addr).unwrap();
+        } else {
+            for addr_str in &listen_addrs {
+                if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                    println!("📡 Configuring listener on: {}", addr);
+                    worker.swarm.listen_on(addr).unwrap();
+                }
+            }
+        }
+        
         // Bootstrap DHT with provided peers
         if !bootstrap_peers.is_empty() {
             for peer_addr in &bootstrap_peers {
@@ -268,12 +280,9 @@ impl NetworkNode {
             }
         }
         
-        // Spawn network thread
-        thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
-                worker.run().await;
-            });
+        // Spawn network event loop on current Tokio runtime
+        tokio::spawn(async move {
+            worker.run().await;
         });
         
         Ok((
@@ -430,10 +439,6 @@ impl NetworkNode {
 impl NetworkWorker {
     /// Run the network worker loop
     async fn run(mut self) {
-        // Start listening on default address
-        let addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
-        let _ = self.swarm.listen_on(addr);
-        
         loop {
             tokio::select! {
                 // Handle swarm events
@@ -617,9 +622,14 @@ impl NetworkWorker {
                 self.handle_behaviour_event(behaviour_event).await;
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                println!("✅ Connection established with peer: {}", peer_id);
+                // Add peer as explicit GossipSub peer for small networks
+                self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                println!("❌ Connection closed with peer: {}", peer_id);
+                self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                 let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
             }
             _ => {}
@@ -709,7 +719,7 @@ impl NetworkWorker {
         }
     }
     
-    /// Handle GossipSub events
+    /// Handle gossipsub events
     async fn handle_gossipsub_event(&mut self, event: gossipsub::Event) {
         match event {
             gossipsub::Event::Message {
@@ -718,11 +728,18 @@ impl NetworkWorker {
                 ..
             } => {
                 let topic = message.topic.to_string();
+                println!("🎯 NetworkWorker received GossipSub message on topic: {}", topic);
                 let _ = self.event_tx.send(NetworkEvent::MessageReceived {
                     topic,
                     data: message.data,
                     source: propagation_source,
                 });
+            }
+            gossipsub::Event::Subscribed { peer_id, topic } => {
+                println!("🔔 Peer {} subscribed to topic: {}", peer_id, topic);
+            }
+            gossipsub::Event::Unsubscribed { peer_id, topic } => {
+                println!("🔕 Peer {} unsubscribed from topic: {}", peer_id, topic);
             }
             _ => {}
         }

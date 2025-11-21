@@ -110,8 +110,11 @@ impl Client {
         // Initialize blob storage
         let storage = Arc::new(crate::storage::Storage::open(&config.storage_path)?);
         
-        // Create network with bootstrap peers
-        let (network_node, network_rx) = NetworkNode::new_with_config(config.bootstrap_peers.clone())?;
+        // Create network with bootstrap peers and listen addresses
+        let (network_node, network_rx) = NetworkNode::new_with_config(
+            config.bootstrap_peers.clone(),
+            config.listen_addrs.clone()
+        )?;
         let network = Arc::new(RwLock::new(network_node));
         let network_rx = Arc::new(RwLock::new(network_rx));
         
@@ -165,19 +168,69 @@ impl Client {
                 if let Some(event) = event_opt {
                     match event {
                         NetworkEvent::MessageReceived { topic, data, source } => {
+                            println!("📬 Client received network message on topic: {}", topic);
+                            
+                            // Check if this is a sync request (starts with "SYNC_REQUEST:")
+                            if let Ok(text) = String::from_utf8(data.clone()) {
+                                if text.starts_with("SYNC_REQUEST:") {
+                                    println!("  🔄 Received sync request from peer");
+                                    if let Some(space_id_hex) = text.strip_prefix("SYNC_REQUEST:") {
+                                        println!("    Space ID hex: {}", space_id_hex);
+                                        if let Ok(space_id_bytes) = hex::decode(space_id_hex) {
+                                            println!("    Decoded {} bytes", space_id_bytes.len());
+                                            if space_id_bytes.len() == 32 {
+                                                let mut space_id_arr = [0u8; 32];
+                                                space_id_arr.copy_from_slice(&space_id_bytes);
+                                                let space_id = SpaceId(space_id_arr);
+                                                
+                                                // Handle sync request inline (we're already in async context)
+                                                match store.get_space_ops(&space_id) {
+                                                    Ok(ops) => {
+                                                        println!("    Found {} operations in storage", ops.len());
+                                                        if !ops.is_empty() {
+                                                            println!("  📤 Re-broadcasting {} operations for Space", ops.len());
+                                                            let space_topic = format!("space/{}", hex::encode(&space_id.0[..8]));
+                                                            for op in ops {
+                                                                // Broadcast each operation
+                                                                if let Ok(data) = minicbor::to_vec(&op) {
+                                                                    let mut net = network.write().await;
+                                                                    let _ = net.publish(&space_topic, data).await;
+                                                                    drop(net);
+                                                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                                                }
+                                                            }
+                                                            println!("  ✓ Sync complete");
+                                                        } else {
+                                                            println!("    ⚠️ No operations to send");
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        println!("    ⚠️ Error getting operations: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    continue; // Don't try to decode as CrdtOp
+                                }
+                            }
+                            
                             // Decode CRDT operation
                             match minicbor::decode::<CrdtOp>(&data) {
                                 Ok(op) => {
+                                    println!("  ✓ Decoded operation: {:?}", op.op_type);
                                     // Verify signature before processing
                                     if !op.verify_signature() {
                                         eprintln!("⚠️ Rejected message with invalid signature from {:?}", source);
                                         continue;
                                     }
+                                    println!("  ✓ Signature verified");
                                     
                                     // Check if we've already processed this operation (deduplication)
                                     let is_duplicate = if let Ok(Some(_)) = store.get_op(&op.op_id) {
                                         // Already seen this op, skip processing
                                         gossip_metrics.record_receive(&topic, true).await;
+                                        println!("  ⚠️ Duplicate operation, skipping");
                                         true
                                     } else {
                                         gossip_metrics.record_receive(&topic, false).await;
@@ -187,6 +240,7 @@ impl Client {
                                     if is_duplicate {
                                         continue;
                                     }
+                                    println!("  ✓ Not a duplicate, processing...");
                                     
                                     tracing::debug!(
                                         op_id = ?op.op_id,
@@ -437,21 +491,26 @@ impl Client {
         space_id: SpaceId,
         code: String,
     ) -> Result<CrdtOp> {
+        // Subscribe to space topic FIRST so we can receive operations via GossipSub
+        println!("ℹ Subscribing to Space topic...");
+        self.subscribe_to_space(&space_id).await?;
+        
         // First check if we have the Space locally
         let has_space = {
             let manager = self.space_manager.read().await;
             manager.get_space(&space_id).is_some()
         };
         
-        // If Space doesn't exist locally, try fetching from DHT
+        // If Space doesn't exist locally, try fetching from DHT or create placeholder
         if !has_space {
-            println!("⚠️  Space not found locally, fetching from DHT...");
+            println!("⚠️  Space not found locally, will sync via GossipSub from connected peers...");
+            
+            // Try DHT as a fallback
             match self.dht_get_space(&space_id).await {
                 Ok(space) => {
                     println!("✓ Retrieved Space '{}' from DHT", space.name);
-                    println!("  Note: You won't be able to decrypt messages until an admin adds you to the MLS group");
                     
-                    // Store space metadata locally (but we don't have MLS keys yet)
+                    // Store space metadata locally
                     let mut manager = self.space_manager.write().await;
                     manager.add_space_from_dht(space);
                     drop(manager); // Release lock for async operation
@@ -475,11 +534,32 @@ impl Client {
                     }
                 }
                 Err(e) => {
-                    println!("✗ Failed to fetch Space from DHT: {}", e);
-                    println!("  The Space creator may need to be online for you to join");
-                    return Err(Error::NotFound(format!(
-                        "Space not found locally or in DHT. Creator may be offline."
-                    )));
+                    eprintln!("⚠ DHT fetch failed: {}", e);
+                    println!("  Requesting sync from connected peers via GossipSub...");
+                    
+                    // Broadcast a sync request on the Space topic
+                    let space_topic = format!("space/{}", hex::encode(&space_id.0[..8]));
+                    let sync_request = format!("SYNC_REQUEST:{}", hex::encode(&space_id.0));
+                    if let Err(e) = self.broadcast_raw(&space_topic, sync_request.as_bytes().to_vec()).await {
+                        eprintln!("⚠ Failed to send sync request: {}", e);
+                    }
+                    
+                    // Wait for peers to respond with operations
+                    println!("  Waiting 3 seconds for peers to resend Space operations...");
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    
+                    // Check if we received the Space
+                    let manager = self.space_manager.read().await;
+                    if manager.get_space(&space_id).is_none() {
+                        drop(manager);
+                        println!("  Tip: Make sure you're connected to the Space creator");
+                        println!("  Use 'network' to check connections, 'connect <multiaddr>' to connect");
+                        return Err(Error::NotFound(format!(
+                            "Space not found. Connect to the Space creator first, then try again."
+                        )));
+                    }
+                    drop(manager);
+                    println!("✓ Received Space data from peer");
                 }
             }
         }
@@ -1329,6 +1409,8 @@ impl Client {
     async fn broadcast_op(&self, op: &CrdtOp) -> Result<()> {
         let topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
         
+        println!("📢 Broadcasting operation on topic: {}", topic);
+        
         // Broadcast via GossipSub
         self.broadcast_op_on_topic(op, &topic).await?;
         
@@ -1363,11 +1445,20 @@ impl Client {
         result.or(Ok(()))
     }
     
+    /// Broadcast raw data on a topic (for sync requests, etc.)
+    async fn broadcast_raw(&self, topic: &str, data: Vec<u8>) -> Result<()> {
+        let mut network = self.network.write().await;
+        network.publish(topic, data).await
+    }
+    
+    /// Handle a sync request from a peer by re-broadcasting all Space operations
     /// Subscribe to a Space's operation stream
     pub async fn subscribe_to_space(&self, space_id: &SpaceId) -> Result<()> {
         let topic = format!("space/{}", ::hex::encode(&space_id.0[..8]));
+        println!("🔔 Subscribing to topic: {}", topic);
         let mut network = self.network.write().await;
         network.subscribe(&topic).await?;
+        println!("✓ Subscribed to topic: {}", topic);
         
         Ok(())
     }

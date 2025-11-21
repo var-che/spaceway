@@ -52,6 +52,8 @@ impl CommandHandler {
         match parts[0] {
             "whoami" => self.cmd_whoami().await,
             "context" => self.cmd_context(),
+            "network" => self.cmd_network().await,
+            "connect" => self.cmd_connect(&parts[1..]).await,
             "spaces" => self.cmd_spaces().await,
             "space" => self.cmd_space(&parts[1..]).await,
             "channels" => self.cmd_channels().await,
@@ -80,6 +82,63 @@ impl CommandHandler {
         println!();
         println!("{} {}", "Username:".bright_green(), self.username.bright_cyan());
         println!("{} {}", "User ID:".bright_green(), hex::encode(&user_id.as_bytes()[..16]));
+        println!();
+        Ok(())
+    }
+
+    async fn cmd_network(&self) -> Result<()> {
+        let (peer_id, listeners) = {
+            let client = self.client.lock().await;
+            let peer_id = client.network_peer_id().await;
+            let listeners = client.network_listeners().await;
+            (peer_id, listeners)
+        };
+
+        println!();
+        println!("{}", "Network Status:".bright_cyan().bold());
+        println!("  {}: {}", "Peer ID".bright_green(), peer_id.bright_yellow());
+        
+        if listeners.is_empty() {
+            println!("  {}: {}", "Listening".bright_green(), "Not listening (no incoming connections)".yellow());
+        } else {
+            println!("  {}: {}", "Listening on".bright_green(), listeners.len());
+            for addr in &listeners {
+                println!("    {}", addr.bright_yellow());
+            }
+        }
+
+        if listeners.is_empty() {
+            println!();
+            println!("{}", "💡 Tip: To accept connections, restart with --port <PORT>".bright_blue());
+            println!("  {}", "Example: descord --account alice.key --port 9001".bright_black());
+        } else {
+            println!();
+            println!("{}", "📋 Share this multiaddr for others to connect:".bright_blue());
+            if let Some(addr) = listeners.first() {
+                println!("  {}", format!("{}/p2p/{}", addr, peer_id).bright_yellow());
+            }
+        }
+
+        println!();
+        Ok(())
+    }
+
+    async fn cmd_connect(&mut self, args: &[&str]) -> Result<()> {
+        if args.is_empty() {
+            ui::print_error("Usage: connect <multiaddr>");
+            println!("  Example: connect /ip4/127.0.0.1/tcp/9001/p2p/12D3KooW...");
+            return Ok(());
+        }
+
+        let addr = args.join(" ");
+        ui::print_info(&format!("Connecting to peer: {}...", addr));
+
+        {
+            let client = self.client.lock().await;
+            client.network_dial(&addr).await?;
+        }
+
+        ui::print_success("Connected to peer!");
         println!();
         Ok(())
     }
@@ -468,7 +527,7 @@ impl CommandHandler {
                 println!("  Share this code with others to invite them:");
                 println!("  {} join {} {}", 
                     "$".bright_black(), 
-                    hex::encode(&space_id.0[..8]).bright_yellow(),
+                    hex::encode(&space_id.0).bright_yellow(),
                     invite.code.bright_yellow()
                 );
                 println!();
@@ -491,9 +550,14 @@ impl CommandHandler {
         if args[0] == "dht" {
             // Join from DHT
             let space_id_hex = args[1];
-            let mut space_id_bytes = [0u8; 32];
-            hex::decode_to_slice(space_id_hex, &mut space_id_bytes)
+            let decoded = hex::decode(space_id_hex)
                 .context("Invalid space ID hex")?;
+            if decoded.len() != 32 {
+                ui::print_error(&format!("Space ID must be 32 bytes (64 hex chars), got {} bytes", decoded.len()));
+                return Ok(());
+            }
+            let mut space_id_bytes = [0u8; 32];
+            space_id_bytes.copy_from_slice(&decoded);
             let space_id = SpaceId(space_id_bytes);
 
             ui::print_info(&format!("Joining Space from DHT: {}...", space_id_hex));
@@ -517,9 +581,14 @@ impl CommandHandler {
             let space_id_hex = args[0];
             let invite_code = args[1];
 
-            let mut space_id_bytes = [0u8; 32];
-            hex::decode_to_slice(space_id_hex, &mut space_id_bytes)
+            let decoded = hex::decode(space_id_hex)
                 .context("Invalid space ID hex")?;
+            if decoded.len() != 32 {
+                ui::print_error(&format!("Space ID must be 32 bytes (64 hex chars), got {} bytes", decoded.len()));
+                return Ok(());
+            }
+            let mut space_id_bytes = [0u8; 32];
+            space_id_bytes.copy_from_slice(&decoded);
             let space_id = SpaceId(space_id_bytes);
 
             ui::print_info(&format!("Joining Space with invite code: {}...", invite_code));

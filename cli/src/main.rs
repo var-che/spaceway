@@ -34,6 +34,14 @@ struct Args {
     /// Data directory
     #[arg(short, long)]
     data_dir: Option<PathBuf>,
+
+    /// Port to listen on (e.g., 0 for random, 9001 for specific port)
+    #[arg(short = 'p', long)]
+    port: Option<u16>,
+
+    /// Bootstrap peer multiaddr to connect to (e.g., /ip4/127.0.0.1/tcp/9001/p2p/12D3...)
+    #[arg(short = 'b', long)]
+    bootstrap: Option<String>,
 }
 
 #[tokio::main]
@@ -62,18 +70,32 @@ async fn main() -> Result<()> {
     println!("{} {}", "Relay:".bright_green(), args.relay);
     println!();
 
-    // Create client
+    // Create client with per-user data directory
     let data_dir = args.data_dir.unwrap_or_else(|| {
-        let mut dir = args.account.clone();
-        dir.pop();
-        dir.push("data");
-        dir
+        // Use account filename (without .key) as the data dir name
+        let account_name = args.account
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("data");
+        PathBuf::from(format!("{}-data", account_name))
     });
+
+    let listen_addrs = if let Some(port) = args.port {
+        vec![format!("/ip4/0.0.0.0/tcp/{}", port)]
+    } else {
+        vec![]
+    };
+
+    let bootstrap_peers = if let Some(peer) = args.bootstrap {
+        vec![peer]
+    } else {
+        vec![]
+    };
 
     let config = ClientConfig {
         storage_path: data_dir,
-        listen_addrs: vec![],
-        bootstrap_peers: vec![],
+        listen_addrs,
+        bootstrap_peers,
     };
 
     info!("Creating client with config: {:?}", config);

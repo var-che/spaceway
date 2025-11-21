@@ -40,6 +40,8 @@ pub fn print_help() {
     println!("  {}", "Info:".bright_yellow().bold());
     println!("  {:<30} {}", "whoami".bright_green(), "Show current user info");
     println!("  {:<30} {}", "context".bright_green(), "Show current context");
+    println!("  {:<30} {}", "network".bright_green(), "Show network status & peer ID");
+    println!("  {:<30} {}", "connect <multiaddr>".bright_green(), "Connect to a peer");
     println!("  {:<30} {}", "refresh".bright_green(), "Refresh network status");
     println!();
 }

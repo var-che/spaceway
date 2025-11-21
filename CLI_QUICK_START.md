@@ -17,11 +17,12 @@ The binary will be at `target/release/descord` (or `target/release/descord.exe` 
 # Create/load account for Alice
 ./descord --account alice.key
 
-# Create/load account for Bob  
+# Create/load account for Bob (in a separate terminal)
 ./descord --account bob.key
 ```
 
 The account file will be created automatically if it doesn't exist.
+**Each account gets its own data directory** (e.g., `alice-data/`, `bob-data/`), so multiple users can run simultaneously.
 
 ## Quick Workflow Example
 
@@ -217,11 +218,14 @@ Make sure you've selected a space first: `space <id>` or create one with `space 
 ### "No channel selected"  
 After selecting a space, select a channel: `channel <id>` or create one
 
+### "Failed to create lock file" / "file is being used by another process"
+This means two users are trying to use the same data directory. Each account automatically gets its own directory (e.g., `demo-alice-data/` for `demo-alice.key`). Make sure you're using different `--account` filenames for each user.
+
 ### "DHT PUT failed"
 This is normal in isolated testing without other peers. In production with relay nodes, DHT operations will succeed.
 
 ### Commands not recognized
-Type `help` to see all available commands and their syntax.
+Type `help` to see all available commands and their syntax. **Important**: Commands like `join` must be run INSIDE the Descord CLI, not from your system command prompt.
 
 ## Production Deployment
 

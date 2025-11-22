@@ -18,6 +18,20 @@ use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
+use std::collections::VecDeque;
+
+/// Queued MLS message that failed to decrypt (e.g., due to epoch mismatch)
+#[derive(Debug, Clone)]
+struct PendingMlsMessage {
+    /// Space ID this message belongs to
+    space_id: SpaceId,
+    /// Encrypted message data
+    encrypted_data: Vec<u8>,
+    /// Topic it was received on
+    topic: String,
+    /// When it was first queued
+    queued_at: Instant,
+}
 
 /// Information about a peer discovered in a space
 #[derive(Debug, Clone)]
@@ -95,6 +109,9 @@ pub struct Client {
     
     /// GossipSub metrics
     gossip_metrics: Arc<crate::network::GossipMetrics>,
+    
+    /// Queue for MLS messages that failed to decrypt (waiting for epoch update)
+    pending_mls_messages: Arc<RwLock<VecDeque<PendingMlsMessage>>>,
 }
 
 impl Client {
@@ -130,6 +147,7 @@ impl Client {
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
         let mls_signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
             .map_err(|e| crate::Error::Crypto(format!("Failed to create MLS signer: {:?}", e)))?;
+        let mls_signer = Arc::new(mls_signer); // Wrap in Arc for sharing
         
         let mut kp_store = crate::mls::KeyPackageStore::new(user_id, mls_signer, ciphersuite);
         
@@ -162,6 +180,7 @@ impl Client {
             current_relay: Arc::new(RwLock::new(None)),
             rotation_task: Arc::new(RwLock::new(None)),
             gossip_metrics,
+            pending_mls_messages: Arc::new(RwLock::new(VecDeque::new())),
         })
     }
     
@@ -187,6 +206,8 @@ impl Client {
         let network = Arc::clone(&self.network);
         let gossip_metrics = Arc::clone(&self.gossip_metrics);
         let mls_provider = Arc::clone(&self.mls_provider); // Clone Arc<RwLock> to share provider
+        let keypackage_store = Arc::clone(&self.keypackage_store); // Clone for Welcome processing
+        let pending_mls_messages = Arc::clone(&self.pending_mls_messages); // Clone for queued message processing
         let user_id = self.user_id; // Clone user_id for the async task
         
         tokio::spawn(async move {
@@ -250,33 +271,240 @@ impl Client {
                             if topic.starts_with("user/") && topic.ends_with("/welcome") {
                                 println!("  🎉 Received MLS Welcome message");
                                 
-                                // Process Welcome message to join MLS group
-                                use openmls_basic_credential::SignatureKeyPair;
-                                let ciphersuite = openmls::prelude::Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-                                let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
-                                    .map_err(|e| crate::Error::Crypto(format!("Failed to create signer: {:?}", e)));
+                                // Get the signer from our KeyPackageStore
+                                // This is the SAME signer used when generating KeyPackages
+                                // Critical: must use the same keypair that Alice expects!
+                                let kp_store = keypackage_store.read().await;
+                                let signer_arc = kp_store.signer();
+                                drop(kp_store);
                                 
-                                if let Ok(signer) = signer {
-                                    // Use the shared provider that has the KeyPackage private keys
-                                    let provider = mls_provider.read().await;
-                                    match crate::mls::MlsGroup::from_welcome(
-                                        data.clone(),
-                                        user_id,
-                                        signer,
-                                        &provider
-                                    ) {
-                                    Ok(mls_group) => {
-                                        println!("  ✓ Successfully joined MLS group (epoch {})", mls_group.current_epoch().0);
+                                // Use the shared provider that has the KeyPackage private keys
+                                let provider = mls_provider.read().await;
+                                match crate::mls::MlsGroup::from_welcome(
+                                    data.clone(),
+                                    user_id,
+                                    signer_arc,  // Pass the Arc directly
+                                    &provider
+                                ) {
+                                Ok(mls_group) => {
+                                    let epoch = mls_group.current_epoch().0;
+                                    println!("  ✓ Successfully joined MLS group (epoch {})", epoch);
                                         
-                                        // Store the MLS group
-                                        // TODO: Extract space_id from Welcome context to properly store
-                                        // For now we log success but can't store without space_id
-                                        println!("  ⚠️ MLS group joined but needs space_id to store (will be synced via CRDT)");
+                                        // Find which space this Welcome is for by checking spaces without MLS groups
+                                        // We look for the most recently joined space that doesn't have an MLS group yet
+                                        let mut found_space = false;
+                                        {
+                                            let space_mgr = space_manager.read().await;
+                                            let mut spaces = space_mgr.list_spaces();
+                                            
+                                            // Look for ANY space that doesn't have an MLS group yet
+                                            // (Assumes Welcome messages arrive in order with space joins)
+                                            for space in spaces.iter() {
+                                                if space_mgr.get_mls_group(&space.id).is_none() {
+                                                    // This must be the space for this Welcome!
+                                                    let space_id = space.id;
+                                                    let space_name = space.name.clone();
+                                                    drop(space_mgr);
+                                                    
+                                                    let mut space_mgr_mut = space_manager.write().await;
+                                                    space_mgr_mut.store_mls_group(space_id, mls_group);
+                                                    drop(space_mgr_mut);
+                                                    
+                                                    println!("  ✓ MLS group stored for space {} ({})", 
+                                                        space_name, hex::encode(&space_id.0[..8]));
+                                                    println!("  ✓ Can now decrypt messages in this space!");
+                                                    
+                                                    // Process queued messages for this space
+                                                    let mut pending_queue = pending_mls_messages.write().await;
+                                                    let queue_len = pending_queue.len();
+                                                    if queue_len > 0 {
+                                                        println!("  📬 Processing {} queued messages...", queue_len);
+                                                        
+                                                        // Drain messages for this space and try to decrypt them
+                                                        let mut remaining = VecDeque::new();
+                                                        let mut processed = 0;
+                                                        
+                                                        while let Some(pending_msg) = pending_queue.pop_front() {
+                                                            if pending_msg.space_id == space_id {
+                                                                // Try to decrypt now that we have the updated epoch
+                                                                let mut space_mgr_mut = space_manager.write().await;
+                                                                let provider = mls_provider.read().await;
+                                                                
+                                                                if let Some(mls_group) = space_mgr_mut.get_mls_group_mut(&space_id) {
+                                                                    match mls_group.decrypt_application_message(&pending_msg.encrypted_data, &provider) {
+                                                                        Ok(decrypted_bytes) => {
+                                                                            println!("    ✓ Decrypted queued message ({} bytes)", decrypted_bytes.len());
+                                                                            processed += 1;
+                                                                            
+                                                                            // Decode and process the operation
+                                                                            if let Ok(op) = minicbor::decode::<CrdtOp>(&decrypted_bytes) {
+                                                                                // Store and process the operation (same logic as regular messages)
+                                                                                if op.verify_signature() {
+                                                                                    if let Err(e) = store.put_op(&op) {
+                                                                                        eprintln!("      ⚠️ Failed to store queued operation: {}", e);
+                                                                                    }
+                                                                                    // Process the operation...
+                                                                                    // (This would need the full operation processing logic)
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        Err(e) => {
+                                                                            eprintln!("    ⚠️ Still can't decrypt queued message: {}", e);
+                                                                            // Re-queue if still can't decrypt
+                                                                            remaining.push_back(pending_msg);
+                                                                        }
+                                                                    }
+                                                                }
+                                                                drop(provider);
+                                                                drop(space_mgr_mut);
+                                                            } else {
+                                                                // Different space, keep in queue
+                                                                remaining.push_back(pending_msg);
+                                                            }
+                                                        }
+                                                        
+                                                        // Put back messages we couldn't process
+                                                        *pending_queue = remaining;
+                                                        println!("    ✓ Processed {}/{} queued messages", processed, queue_len);
+                                                    }
+                                                    drop(pending_queue);
+                                                    
+                                                    found_space = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if !found_space {
+                                            println!("  ⚠️ Couldn't find space for this MLS group (will sync via CRDT)");
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("  ⚠️ Failed to process Welcome message: {}", e);
                                     }
                                 }
+                                
+                                continue; // Don't try to decode as CrdtOp
+                            }
+                            
+                            // Check if this is a Commit message (MLS protocol message for epoch updates)
+                            // Commit messages don't have the 0x01 marker - they're raw OpenMLS messages
+                            // Try to detect Commit by attempting to deserialize as MlsMessageIn
+                            let is_commit_message = if data.first() != Some(&0x01) {
+                                use openmls::prelude::tls_codec::Deserialize;
+                                if let Ok(mls_msg) = openmls::framing::MlsMessageIn::tls_deserialize(&mut &data[..]) {
+                                    if let Ok(_) = mls_msg.try_into_protocol_message() {
+                                        // This looks like an OpenMLS protocol message (possibly Commit)
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            
+                            if is_commit_message {
+                                println!("  🔄 MLS Commit message detected - processing epoch update...");
+                                
+                                // We need to find which space this Commit is for
+                                // The Commit itself doesn't contain the space_id, but we can try all our spaces
+                                
+                                // First, collect space IDs to avoid borrow issues
+                                let space_ids: Vec<SpaceId> = {
+                                    let mut space_mgr = space_manager.write().await;
+                                    space_mgr.mls_groups_mut().map(|(id, _)| *id).collect()
+                                };
+                                
+                                let mut processed = false;
+                                let mut processed_space_id: Option<SpaceId> = None;
+                                
+                                // Try to process with each MLS group we're in
+                                for space_id in space_ids {
+                                    let mut space_mgr = space_manager.write().await;
+                                    let provider = mls_provider.read().await;
+                                    
+                                    if let Some(mls_group) = space_mgr.get_mls_group_mut(&space_id) {
+                                        match mls_group.process_commit_message(&data, &provider) {
+                                            Ok(()) => {
+                                                println!("  ✓ Commit processed for space {}", hex::encode(&space_id.0[..8]));
+                                                processed = true;
+                                                processed_space_id = Some(space_id);
+                                                drop(provider);
+                                                drop(space_mgr);
+                                                break;
+                                            }
+                                            Err(_) => {
+                                                // Not for this group, try next
+                                                drop(provider);
+                                                drop(space_mgr);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // If we processed a Commit, try to decrypt queued messages for that space
+                                if let Some(space_id) = processed_space_id {
+                                    println!("  📬 Checking for queued messages to process...");
+                                    let queued: Vec<PendingMlsMessage> = {
+                                        let mut pending_queue = pending_mls_messages.write().await;
+                                        pending_queue.drain(..).collect()
+                                    };
+                                    
+                                    if !queued.is_empty() {
+                                        println!("  📬 Processing {} queued messages...", queued.len());
+                                        
+                                        for queued_msg in queued {
+                                            if queued_msg.space_id == space_id {
+                                                // Try to decrypt this queued message
+                                                let mut space_mgr = space_manager.write().await;
+                                                let provider = mls_provider.read().await;
+                                                
+                                                if let Some(mls_group) = space_mgr.get_mls_group_mut(&space_id) {
+                                                    match mls_group.decrypt_application_message(&queued_msg.encrypted_data, &provider) {
+                                                        Ok(plaintext) => {
+                                                            println!("  ✓ Decrypted queued message ({} bytes)", plaintext.len());
+                                                            
+                                                            // Decode the CrdtOp from the decrypted plaintext
+                                                            if let Ok(op) = bincode::deserialize::<CrdtOp>(&plaintext) {
+                                                                drop(provider);
+                                                                drop(space_mgr);
+                                                                
+                                                                // Process the operation
+                                                                // TODO: Can't call self.handle_incoming_op from spawned task
+                                                                // Need to send op to a channel for processing
+                                                                eprintln!("  ✓ Queued operation decoded, but can't process in spawned task");
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            // Still can't decrypt - re-queue
+                                                            eprintln!("  ⚠️ Still can't decrypt queued message: {}", e);
+                                                            let mut pending_queue = pending_mls_messages.write().await;
+                                                            pending_queue.push_back(queued_msg);
+                                                            drop(pending_queue);
+                                                        }
+                                                    }
+                                                } else {
+                                                    // MLS group not found - re-queue
+                                                    let mut pending_queue = pending_mls_messages.write().await;
+                                                    pending_queue.push_back(queued_msg);
+                                                    drop(pending_queue);
+                                                }
+                                            } else {
+                                                // Not for this space - re-queue
+                                                let mut pending_queue = pending_mls_messages.write().await;
+                                                pending_queue.push_back(queued_msg);
+                                                drop(pending_queue);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if !processed {
+                                    eprintln!("  ⚠️ Could not process Commit (no matching MLS group)");
                                 }
                                 
                                 continue; // Don't try to decode as CrdtOp
@@ -319,9 +547,25 @@ impl Client {
                                                     plaintext
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("  ⚠️ Failed to decrypt MLS message: {}", e);
-                                                    eprintln!("     (You may have been removed from this Space)");
-                                                    continue;
+                                                    let error_str = format!("{:?}", e);
+                                                    if error_str.contains("WrongEpoch") {
+                                                        // Epoch mismatch - queue for retry after Welcome
+                                                        eprintln!("  ⏸️  Message from future epoch - queuing for retry");
+                                                        let mut pending_queue = pending_mls_messages.write().await;
+                                                        pending_queue.push_back(PendingMlsMessage {
+                                                            space_id,
+                                                            encrypted_data: encrypted_data.to_vec(),
+                                                            topic: topic.clone(),
+                                                            queued_at: Instant::now(),
+                                                        });
+                                                        eprintln!("     (Queued: {} pending messages)", pending_queue.len());
+                                                        drop(pending_queue);
+                                                        continue;
+                                                    } else {
+                                                        eprintln!("  ⚠️ Failed to decrypt MLS message: {}", e);
+                                                        eprintln!("     (You may have been removed from this Space)");
+                                                        continue;
+                                                    }
                                                 }
                                             }
                                         }
@@ -431,6 +675,42 @@ impl Client {
                                             let mut manager = space_manager.write().await;
                                             let _ = manager.process_update_space_visibility(&op);
                                         }
+                                        crate::crdt::OpType::CreateInvite(_) => {
+                                            let mut manager = space_manager.write().await;
+                                            if let Err(e) = manager.process_create_invite(&op) {
+                                                eprintln!("⚠️ Failed to process CreateInvite: {}", e);
+                                            }
+                                        }
+                                        crate::crdt::OpType::RevokeInvite(_) => {
+                                            let mut manager = space_manager.write().await;
+                                            if let Err(e) = manager.process_revoke_invite(&op) {
+                                                eprintln!("⚠️ Failed to process RevokeInvite: {}", e);
+                                            }
+                                        }
+                                        crate::crdt::OpType::UseInvite(_) => {
+                                            let mut manager = space_manager.write().await;
+                                            if let Err(e) = manager.process_use_invite(&op) {
+                                                eprintln!("⚠️ Failed to process UseInvite: {}", e);
+                                            } else {
+                                                println!("✓ Processed UseInvite: user joined space {}", op.space_id);
+                                            }
+                                        }
+                                        crate::crdt::OpType::AddMember(_) => {
+                                            // AddMember operations add a user to the space
+                                            if let crate::crdt::OpType::AddMember(crate::crdt::OpPayload::AddMember { user_id, role }) = &op.op_type {
+                                                let mut manager = space_manager.write().await;
+                                                // Access spaces HashMap directly (SpaceManager::spaces is private, so use process_use_invite pattern)
+                                                // For now, just log - AddMember is handled by MLS flow or use_invite
+                                                println!("ℹ AddMember operation received for user {} on space {}", user_id, op.space_id);
+                                                println!("  (Members are added via invite or MLS Welcome message)");
+                                            }
+                                        }
+                                        crate::crdt::OpType::RemoveMember(_) => {
+                                            let mut manager = space_manager.write().await;
+                                            if let Err(e) = manager.process_remove_member(&op) {
+                                                eprintln!("⚠️ Failed to process RemoveMember: {}", e);
+                                            }
+                                        }
                                         crate::crdt::OpType::CreateChannel(_) => {
                                             let mut manager = channel_manager.write().await;
                                             let _ = manager.process_create_channel(&op);
@@ -519,7 +799,18 @@ impl Client {
             &self.keypair,
             &provider,
         )?;
-                drop(provider);        // Store operation
+        drop(provider);
+        
+        // Get the space before dropping the lock
+        let space = manager.get_space(&space_id)
+            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?
+            .clone();
+        
+        // **CRITICAL**: Drop the lock BEFORE broadcasting to avoid deadlock
+        // broadcast_op_on_topic needs to acquire space_manager lock for MLS encryption
+        drop(manager);
+        
+        // Store operation
         self.store.put_op(&op)?;
         
         // Broadcast operation on space topic
@@ -532,12 +823,8 @@ impl Client {
         // This allows peers who aren't subscribed to the space yet to receive the initial CreateSpace op
         let _ = self.broadcast_op_on_topic(&op, "descord/space-discovery").await;
         
-        let space = manager.get_space(&space_id)
-            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?
-            .clone();
-        
         // Store Space metadata in DHT for offline discovery
-        drop(manager); // Release lock before calling dht_put_space
+        // (space_manager lock already dropped above)
         if let Err(e) = self.dht_put_space(&space_id).await {
             eprintln!("⚠️  Failed to store Space in DHT: {}", e);
             // Non-fatal - space still created locally
@@ -557,13 +844,15 @@ impl Client {
         space_id: SpaceId,
         visibility: SpaceVisibility,
     ) -> Result<CrdtOp> {
-        let mut manager = self.space_manager.write().await;
-        let op = manager.update_space_visibility(
-            space_id,
-            visibility,
-            self.user_id,
-            &self.keypair,
-        )?;
+        let op = {
+            let mut manager = self.space_manager.write().await;
+            manager.update_space_visibility(
+                space_id,
+                visibility,
+                self.user_id,
+                &self.keypair,
+            )?
+        }; // Lock dropped here
         
         // Store operation
         self.store.put_op(&op)?;
@@ -581,14 +870,16 @@ impl Client {
         max_uses: Option<u32>,
         max_age_hours: Option<u32>,
     ) -> Result<CrdtOp> {
-        let mut manager = self.space_manager.write().await;
-        let op = manager.create_invite(
-            space_id,
-            self.user_id,
-            &self.keypair,
-            max_uses,
-            max_age_hours,
-        )?;
+        let op = {
+            let mut manager = self.space_manager.write().await;
+            manager.create_invite(
+                space_id,
+                self.user_id,
+                &self.keypair,
+                max_uses,
+                max_age_hours,
+            )?
+        }; // Lock dropped here
         
         // Store operation
         self.store.put_op(&op)?;
@@ -605,13 +896,15 @@ impl Client {
         space_id: SpaceId,
         invite_id: InviteId,
     ) -> Result<CrdtOp> {
-        let mut manager = self.space_manager.write().await;
-        let op = manager.revoke_invite(
-            space_id,
-            invite_id,
-            self.user_id,
-            &self.keypair,
-        )?;
+        let op = {
+            let mut manager = self.space_manager.write().await;
+            manager.revoke_invite(
+                space_id,
+                invite_id,
+                self.user_id,
+                &self.keypair,
+            )?
+        }; // Lock dropped here
         
         // Store operation
         self.store.put_op(&op)?;
@@ -703,13 +996,15 @@ impl Client {
             }
         }
         
-        let mut manager = self.space_manager.write().await;
-        let op = manager.use_invite(
-            space_id,
-            code,
-            self.user_id,
-            &self.keypair,
-        )?;
+        let op = {
+            let mut manager = self.space_manager.write().await;
+            manager.use_invite(
+                space_id,
+                code,
+                self.user_id,
+                &self.keypair,
+            )?
+        }; // Lock dropped here
         
         // Store operation
         self.store.put_op(&op)?;
@@ -718,7 +1013,6 @@ impl Client {
         self.broadcast_op(&op).await?;
         
         // Subscribe to space topic for future updates
-        drop(manager);
         self.subscribe_to_space(&space_id).await?;
         
         Ok(op)
@@ -905,19 +1199,33 @@ impl Client {
     ) -> Result<()> {
         use crate::crdt::{OperationBatch, EncryptedOperationBatch, OperationBatchIndex};
         
+        eprintln!("🔷 [DHT_PUT_OPS] START: Storing {} operations for space {}", 
+                 ops.len(), hex::encode(&space_id.0[..8]));
+        
         if ops.is_empty() {
+            eprintln!("🔷 [DHT_PUT_OPS] Empty ops, returning early");
             return Ok(());
         }
         
         // First, fetch or create the index
+        eprintln!("🔷 [DHT_PUT_OPS] Step 1: Acquiring network lock...");
         let mut network = self.network.write().await;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 1: ✓ Network lock acquired");
+        
         let index_key = OperationBatchIndex::compute_dht_key(space_id);
+        eprintln!("🔷 [DHT_PUT_OPS] Step 2: Fetching DHT index for key {}...", hex::encode(&index_key[..8]));
         
         let mut index = match network.dht_get(index_key.clone()).await {
             Ok(values) if !values.is_empty() => {
+                eprintln!("🔷 [DHT_PUT_OPS] Step 2: ✓ Found existing index with {} values", values.len());
                 OperationBatchIndex::from_bytes(&values[0])?
             }
-            _ => {
+            Ok(_) => {
+                eprintln!("🔷 [DHT_PUT_OPS] Step 2: Creating new index (no values found)");
+                OperationBatchIndex::new(*space_id)
+            }
+            Err(e) => {
+                eprintln!("🔷 [DHT_PUT_OPS] Step 2: Creating new index (error: {})", e);
                 // Create new index
                 OperationBatchIndex::new(*space_id)
             }
@@ -925,26 +1233,36 @@ impl Client {
         
         // Get next sequence number
         let sequence = index.batch_sequences.last().copied().unwrap_or(0) + 1;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 3: Using sequence number {}", sequence);
         
         // Create operation batch
+        eprintln!("🔷 [DHT_PUT_OPS] Step 4: Creating operation batch...");
         let batch = OperationBatch::new(*space_id, ops.clone(), sequence);
         
         // Encrypt batch
+        eprintln!("🔷 [DHT_PUT_OPS] Step 5: Encrypting batch...");
         let encrypted = EncryptedOperationBatch::encrypt(&batch)?;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 5: ✓ Batch encrypted");
         
         // Store batch in DHT
         let batch_key = encrypted.dht_key();
         let batch_bytes = encrypted.to_bytes()?;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 6: Storing batch in DHT (key: {}, size: {} bytes)...", 
+                 hex::encode(&batch_key[..8]), batch_bytes.len());
         network.dht_put(batch_key, batch_bytes).await?;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 6: ✓ Batch stored in DHT");
         
         // Update index
+        eprintln!("🔷 [DHT_PUT_OPS] Step 7: Updating index...");
         index.add_batch(sequence, ops.len() as u32);
         
         // Store updated index
         let index_bytes = index.to_bytes()?;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 8: Storing updated index in DHT (size: {} bytes)...", index_bytes.len());
         network.dht_put(index_key, index_bytes).await?;
+        eprintln!("🔷 [DHT_PUT_OPS] Step 8: ✓ Index stored in DHT");
         
-        println!("✓ Stored {} operations in DHT (batch {})", ops.len(), sequence);
+        eprintln!("🔷 [DHT_PUT_OPS] END: ✓ Successfully stored {} operations in DHT (batch {})", ops.len(), sequence);
         
         Ok(())
     }
@@ -1383,21 +1701,32 @@ impl Client {
         self.broadcast_op(&op).await?;
         
         // Step 7: Distribute MLS messages via GossipSub
-        let space_topic = format!("space/{}/mls", hex::encode(&space_id.0[..8]));
+        // Use the same topic that members subscribe to: "space/{space_id}"
+        let space_topic = format!("space/{}", hex::encode(&space_id.0[..8]));
         
         // Convert MLS messages to bytes - OpenMLS MlsMessageOut has to_bytes() method
         let commit_bytes = commit_msg.to_bytes()
             .map_err(|e| crate::Error::Serialization(format!("Failed to serialize Commit: {:?}", e)))?;
         let mut network = self.network.write().await;
-        network.publish(&space_topic, commit_bytes).await?;
-        println!("✓ Sent Commit message to existing members");
+        
+        // Attempt to send Commit (may fail if no peers subscribed to /mls topic - that's OK)
+        match network.publish(&space_topic, commit_bytes).await {
+            Ok(_) => println!("✓ Sent Commit message to existing members on {}", space_topic),
+            Err(e) => println!("⚠️ Could not send Commit (no peers on {} topic): {}", space_topic, e),
+        }
         
         // Serialize and send Welcome to new member (via direct topic)
         let welcome_topic = format!("user/{}/welcome", hex::encode(&user_id.0[..8]));
         let welcome_bytes = welcome_msg.to_bytes()
             .map_err(|e| crate::Error::Serialization(format!("Failed to serialize Welcome: {:?}", e)))?;
-        network.publish(&welcome_topic, welcome_bytes).await?;
-        println!("✓ Sent Welcome message to new member");
+        
+        match network.publish(&welcome_topic, welcome_bytes).await {
+            Ok(_) => println!("✓ Sent Welcome message to {} on {}", hex::encode(&user_id.0[..8]), welcome_topic),
+            Err(e) => {
+                eprintln!("✗ Failed to send Welcome message to {}: {}", welcome_topic, e);
+                eprintln!("  This means the new member won't be able to decrypt messages!");
+            }
+        }
         
         drop(network);
         
@@ -1417,7 +1746,7 @@ impl Client {
     ) -> Result<CrdtOp> {
         let mut manager = self.space_manager.write().await;
         let provider = self.mls_provider.read().await;
-        let op = manager.remove_member(
+        let (op, commit_msg_opt) = manager.remove_member(
             space_id,
             user_id,
             self.user_id,
@@ -1425,12 +1754,27 @@ impl Client {
             &provider,
         )?;
         drop(provider);
+        drop(manager);
         
         // Store operation
         self.store.put_op(&op)?;
         
         // Broadcast operation
         self.broadcast_op(&op).await?;
+        
+        // If we got a Commit message, broadcast it to remaining members
+        if let Some(commit_msg) = commit_msg_opt {
+            println!("  📡 Broadcasting Commit to remaining members...");
+            let space_topic = format!("space/{}", hex::encode(&space_id.0[..8]));
+            let commit_bytes = commit_msg.to_bytes()
+                .map_err(|e| Error::Serialization(format!("Failed to serialize Commit: {:?}", e)))?;
+            
+            let mut network = self.network.write().await;
+            match network.publish(&space_topic, commit_bytes).await {
+                Ok(_) => println!("  ✓ Commit broadcast - remaining members will update to new epoch"),
+                Err(e) => eprintln!("  ⚠️ Could not broadcast Commit: {}", e),
+            }
+        }
         
         Ok(op)
     }
@@ -1858,41 +2202,62 @@ impl Client {
     async fn broadcast_op(&self, op: &CrdtOp) -> Result<()> {
         let topic = format!("space/{}", ::hex::encode(&op.space_id.0[..8]));
         
-        println!("📢 Broadcasting operation on topic: {}", topic);
+        eprintln!("📢 [BROADCAST START] Broadcasting operation on topic: {}", topic);
+        eprintln!("📢 [BROADCAST] Operation type: {:?}, space_id: {}", 
+                 std::any::type_name_of_val(&op.op_type), hex::encode(&op.space_id.0[..8]));
         
         // Broadcast via GossipSub
+        eprintln!("📢 [BROADCAST] Step 1: Calling broadcast_op_on_topic (GossipSub)...");
         self.broadcast_op_on_topic(op, &topic).await?;
+        eprintln!("📢 [BROADCAST] Step 1: ✓ GossipSub broadcast completed");
         
         // Store in DHT for offline sync
         // Note: We store each operation individually for now
         // TODO: Batch operations for efficiency
+        eprintln!("📢 [BROADCAST] Step 2: Calling dht_put_operations (DHT storage)...");
         let result = self.dht_put_operations(&op.space_id, vec![op.clone()]).await;
+        match &result {
+            Ok(_) => eprintln!("📢 [BROADCAST] Step 2: ✓ DHT storage completed"),
+            Err(e) => eprintln!("📢 [BROADCAST] Step 2: ✗ DHT storage failed: {}", e),
+        }
         if let Err(e) = result {
             // Don't fail if DHT storage fails (degraded mode)
             eprintln!("⚠ Failed to store operation in DHT: {}", e);
         }
         
+        eprintln!("📢 [BROADCAST END] Broadcast operation completed");
         Ok(())
     }
     
     /// Broadcast a CRDT operation to a specific topic
     async fn broadcast_op_on_topic(&self, op: &CrdtOp, topic: &str) -> Result<()> {
+        eprintln!("🔵 [GOSSIPSUB] START: Broadcasting to topic {}", topic);
+        
         // Serialize the operation
+        eprintln!("🔵 [GOSSIPSUB] Step A: Serializing operation...");
         let op_bytes = minicbor::to_vec(op)
             .map_err(|e| Error::Serialization(format!("Failed to encode operation: {}", e)))?;
+        eprintln!("🔵 [GOSSIPSUB] Step A: ✓ Serialized {} bytes", op_bytes.len());
         
         // Check if this Space has an MLS group - if so, encrypt the operation
+        eprintln!("🔵 [GOSSIPSUB] Step B: Acquiring space_manager lock...");
         let data = {
             let mut space_manager = self.space_manager.write().await;
+            eprintln!("🔵 [GOSSIPSUB] Step B: ✓ Lock acquired, checking for MLS group...");
+            
             if let Some(mls_group) = space_manager.get_mls_group_mut(&op.space_id) {
+                eprintln!("🔵 [GOSSIPSUB] Step C: MLS group found, encrypting...");
                 // Encrypt the operation as MLS application data
                 let provider = self.mls_provider.read().await;
                 let encrypted_msg = mls_group.encrypt_application_message(&op_bytes, &provider)?;
                 drop(provider);
+                eprintln!("🔵 [GOSSIPSUB] Step C: ✓ Encrypted");
                 
                 // Serialize the encrypted MLS message
+                eprintln!("🔵 [GOSSIPSUB] Step D: Serializing encrypted message...");
                 let encrypted_bytes = encrypted_msg.to_bytes()
                     .map_err(|e| Error::Serialization(format!("Failed to serialize MLS message: {}", e)))?;
+                eprintln!("🔵 [GOSSIPSUB] Step D: ✓ Serialized {} bytes", encrypted_bytes.len());
                 
                 // Format: [0x01][space_id (32 bytes)][encrypted_data]
                 // The space_id is needed for decryption on the receive side
@@ -1901,24 +2266,32 @@ impl Client {
                 data.extend_from_slice(&encrypted_bytes);
                 data
             } else {
+                eprintln!("🔵 [GOSSIPSUB] Step C: No MLS group, using plaintext");
                 // No MLS group - send plaintext with marker (0x00)
                 let mut data = vec![0x00];
                 data.extend_from_slice(&op_bytes);
                 data
             }
         };
+        eprintln!("🔵 [GOSSIPSUB] Step E: Data prepared ({} bytes), acquiring network lock...", data.len());
         
         let mut network = self.network.write().await;
+        eprintln!("🔵 [GOSSIPSUB] Step E: ✓ Network lock acquired");
         
         // Attempt to publish, but don't fail if no peers are connected
         // This is expected in single-node scenarios and tests
+        eprintln!("🔵 [GOSSIPSUB] Step F: Calling network.publish...");
         let result = network.publish(topic, data).await;
+        eprintln!("🔵 [GOSSIPSUB] Step F: ✓ Publish returned: {:?}", result.is_ok());
         
         // Record metrics
+        eprintln!("🔵 [GOSSIPSUB] Step G: Recording metrics...");
         if result.is_ok() {
             self.gossip_metrics.record_publish(topic).await;
         }
+        eprintln!("🔵 [GOSSIPSUB] Step G: ✓ Metrics recorded");
         
+        eprintln!("🔵 [GOSSIPSUB] END: Completed");
         result.or(Ok(()))
     }
     

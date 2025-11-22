@@ -14,6 +14,7 @@ use crate::{Error, Result};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Configuration for MLS group creation
 #[derive(Debug, Clone)]
@@ -41,8 +42,8 @@ pub struct MlsGroup {
     /// Current epoch
     current_epoch: EpochId,
     
-    /// Signer keypair for this node
-    signer: SignatureKeyPair,
+    /// Signer keypair for this node (wrapped in Arc for sharing)
+    signer: Arc<SignatureKeyPair>,
     
     /// Member roles (UserId -> Role mapping)
     /// Stored locally and synced via MLS application messages
@@ -54,7 +55,7 @@ impl MlsGroup {
     pub fn create(
         space_id: SpaceId,
         creator_id: UserId,
-        signer: SignatureKeyPair,
+        signer: Arc<SignatureKeyPair>,
         config: MlsGroupConfig,
         provider: &DescordProvider,
     ) -> Result<Self> {
@@ -71,7 +72,7 @@ impl MlsGroup {
         // Create the group
         let group = openmls::group::MlsGroup::new(
             provider,
-            &signer,
+            &*signer,  // Deref the Arc to get &SignatureKeyPair
             &mls_group_create_config,
             CredentialWithKey {
                 credential: credential.into(),
@@ -176,7 +177,7 @@ impl MlsGroup {
         // Add the member to the MLS group
         // This creates a Commit that adds the member and rotates keys
         let (mls_message, welcome_msg, _group_info) = self.group
-            .add_members(provider, &self.signer, &[key_package])
+            .add_members(provider, &*self.signer, &[key_package])
             .map_err(|e| Error::Crypto(format!("Failed to add member to MLS group: {:?}", e)))?;
         
         // Merge the pending commit to update the group state
@@ -203,6 +204,9 @@ impl MlsGroup {
     /// 2. Triggers key rotation (new epoch)
     /// 3. Ensures removed member can't decrypt future messages
     /// 
+    /// # Returns
+    /// The Commit message that must be broadcast to remaining members
+    /// 
     /// # Security Properties
     /// - Forward secrecy: Removed member can't decrypt new messages
     /// - Post-compromise security: New epoch keys generated
@@ -212,7 +216,7 @@ impl MlsGroup {
         user_id: &UserId,
         admin_id: &UserId,
         provider: &DescordProvider,
-    ) -> Result<()> {
+    ) -> Result<openmls::framing::MlsMessageOut> {
         // Check if caller is admin or moderator
         let admin_perms = self.get_permissions(admin_id);
         if !admin_perms.can_kick_members() {
@@ -241,20 +245,24 @@ impl MlsGroup {
 
         // Create and commit the Remove proposal
         // This generates a new epoch and new encryption keys
-        let (_mls_message, _welcome, _group_info) = self.group
-            .remove_members(provider, &self.signer, &[member_index])
+        let (mls_message, _welcome, _group_info) = self.group
+            .remove_members(provider, &*self.signer, &[member_index])
             .map_err(|e| Error::Crypto(format!("Failed to remove member from MLS group: {:?}", e)))?;
+        
+        // Merge the pending commit to update our own group state
+        self.group.merge_pending_commit(provider)
+            .map_err(|e| Error::Crypto(format!("Failed to merge pending commit: {:?}", e)))?;
 
         // Increment epoch
-        self.current_epoch = EpochId(self.current_epoch.0 + 1);
+        self.current_epoch = EpochId(self.group.epoch().as_u64());
 
         // Remove from local role mapping
         self.member_roles.remove(user_id);
         
-        // Note: The MLS message and Welcome need to be distributed to group members
-        // This is handled by the CRDT layer broadcasting the RemoveMember operation
+        println!("✓ Removed member {} from MLS group (epoch {})", user_id, self.current_epoch.0);
         
-        Ok(())
+        // Return the Commit message that must be broadcast to remaining members
+        Ok(mls_message)
     }
 
     /// Process a Welcome message to join an existing MLS group
@@ -267,7 +275,7 @@ impl MlsGroup {
     pub fn from_welcome(
         welcome_bytes: Vec<u8>,
         user_id: UserId,
-        signer: SignatureKeyPair,
+        signer: Arc<SignatureKeyPair>,
         provider: &DescordProvider,
     ) -> Result<Self> {
         // Deserialize the MlsMessageIn (which wraps the Welcome)
@@ -327,7 +335,7 @@ impl MlsGroup {
         provider: &DescordProvider,
     ) -> Result<openmls::framing::MlsMessageOut> {
         let mls_message = self.group
-            .create_message(provider, &self.signer, plaintext)
+            .create_message(provider, &*self.signer, plaintext)
             .map_err(|e| Error::Crypto(format!("Failed to encrypt application message: {:?}", e)))?;
         
         Ok(mls_message)
@@ -359,7 +367,13 @@ impl MlsGroup {
         // Process the message (this verifies signature and decrypts)
         let processed_message = self.group
             .process_message(provider, protocol_message)
-            .map_err(|e| Error::Crypto(format!("Failed to process MLS message: {:?}", e)))?;
+            .map_err(|e| {
+                eprintln!("  🔍 MLS DECRYPTION DEBUG:");
+                eprintln!("     Current epoch: {}", self.current_epoch.0);
+                eprintln!("     Group members: {}", self.member_roles.len());
+                eprintln!("     Error details: {:?}", e);
+                Error::Crypto(format!("Failed to process MLS message: {:?}", e))
+            })?;
         
         // Extract the application message
         match processed_message.into_content() {
@@ -375,6 +389,50 @@ impl MlsGroup {
             ProcessedMessageContent::StagedCommitMessage(_) => {
                 // This is a commit message (membership change) - need to merge it
                 Err(Error::Crypto("Received commit message - should be handled separately".to_string()))
+            }
+        }
+    }
+
+    /// Process a Commit message to update group state (epoch change)
+    /// 
+    /// When a new member is added or removed, the group creator sends a Commit message
+    /// to all existing members. This function processes that Commit and updates the
+    /// local epoch to stay in sync with the group.
+    pub fn process_commit_message(
+        &mut self,
+        commit_bytes: &[u8],
+        provider: &DescordProvider,
+    ) -> Result<()> {
+        use tls_codec::Deserialize;
+        
+        // Deserialize the MlsMessageIn
+        let mls_message_in = openmls::framing::MlsMessageIn::tls_deserialize(&mut &commit_bytes[..])
+            .map_err(|e| Error::Serialization(format!("Failed to deserialize Commit: {:?}", e)))?;
+        
+        // Convert to ProtocolMessage
+        let protocol_message = mls_message_in.try_into_protocol_message()
+            .map_err(|e| Error::Crypto(format!("Invalid Commit protocol message: {:?}", e)))?;
+        
+        // Process the message
+        let processed_message = self.group
+            .process_message(provider, protocol_message)
+            .map_err(|e| Error::Crypto(format!("Failed to process Commit: {:?}", e)))?;
+        
+        // Extract and merge the staged commit
+        match processed_message.into_content() {
+            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                // Merge the commit to update our group state
+                self.group.merge_staged_commit(provider, *staged_commit)
+                    .map_err(|e| Error::Crypto(format!("Failed to merge Commit: {:?}", e)))?;
+                
+                // Update our local epoch
+                self.current_epoch = EpochId(self.group.epoch().as_u64());
+                
+                println!("  ✓ Processed Commit - updated to epoch {}", self.current_epoch.0);
+                Ok(())
+            }
+            _ => {
+                Err(Error::Crypto("Expected Commit message but got different message type".to_string()))
             }
         }
     }
@@ -433,7 +491,7 @@ mod tests {
         let provider = create_provider();
         let space_id = SpaceId::new();
         let user_id = create_test_user_id();
-        let keypair = create_test_keypair();
+        let keypair = Arc::new(create_test_keypair());
         let config = MlsGroupConfig::default();
 
         let group = MlsGroup::create(space_id, user_id, keypair, config, &provider);

@@ -66,7 +66,9 @@ impl CommandHandler {
             "invite" => self.cmd_invite(&parts[1..]).await,
             "join" => self.cmd_join(&parts[1..]).await,
             "members" => self.cmd_members().await,
+            "member" => self.cmd_member(&parts[1..]).await,
             "kick" | "remove" => self.cmd_kick(&parts[1..]).await,
+            "keypackage" => self.cmd_keypackage(&parts[1..]).await,
             "upload" => self.cmd_upload(&parts[1..]).await,
             "refresh" => self.cmd_refresh().await,
             "help" => self.cmd_help(),
@@ -111,11 +113,17 @@ impl CommandHandler {
         println!();
         println!("{}", "  Spaces:".bright_yellow());
         println!("    {} - List all spaces", "spaces".bright_green());
-        println!("    {} <name> - Create or switch to space", "space".bright_green());
+        println!("    {} create <name> - Create a new space", "space".bright_green());
+        println!("    {} list - List all spaces (same as 'spaces')", "space".bright_green());
+        println!("    {} <id> - Switch to a space by ID", "space".bright_green());
         println!("    {} <space_id> <code> - Join space with invite", "join".bright_green());
         println!("    {} - Create invite for current space", "invite".bright_green());
         println!("    {} - List members in current space", "members".bright_green());
         println!("    {} <user_id> - Remove member from current space", "kick".bright_green());
+        println!();
+        println!("{}", "  MLS Encryption:".bright_yellow());
+        println!("    {} - Publish KeyPackages to DHT for MLS", "keypackage publish".bright_green());
+        println!("    {} <user_id> - Add member to MLS encryption group", "member add".bright_green());
         println!();
         println!("{}", "  Channels & Threads:".bright_yellow());
         println!("    {} - List channels in current space", "channels".bright_green());
@@ -141,7 +149,8 @@ impl CommandHandler {
         };
         println!();
         println!("{} {}", "Username:".bright_green(), self.username.bright_cyan());
-        println!("{} {}", "User ID:".bright_green(), hex::encode(&user_id.as_bytes()[..16]));
+        println!("{} {}", "User ID:".bright_green(), hex::encode(user_id.as_bytes()));
+        println!("{} {}", "User ID (short):".bright_green(), hex::encode(&user_id.as_bytes()[..8]));
         println!();
         Ok(())
     }
@@ -256,8 +265,12 @@ impl CommandHandler {
 
     async fn cmd_space(&mut self, args: &[&str]) -> Result<()> {
         if args.is_empty() {
-            ui::print_error("Usage: space create <name>  OR  space <id>");
+            ui::print_error("Usage: space create <name>  OR  space list  OR  space <id>");
             return Ok(());
+        }
+
+        if args[0] == "list" {
+            return self.cmd_spaces().await;
         }
 
         if args[0] == "create" {
@@ -797,6 +810,152 @@ impl CommandHandler {
         };
 
         ui::print_success(&format!("Connected as peer: {}", &peer_id[..16]));
+        Ok(())
+    }
+    
+    async fn cmd_member(&mut self, args: &[&str]) -> Result<()> {
+        let space_id = match self.current_space {
+            Some(id) => id,
+            None => {
+                ui::print_error("No space selected. Use 'space <id>' first");
+                return Ok(());
+            }
+        };
+        
+        if args.is_empty() {
+            ui::print_error("Usage: member add <user_id>");
+            ui::print_info("This adds the user to the MLS encryption group");
+            println!();
+            println!("  Get user IDs with: members");
+            println!("  Example: member add 1a2b3c4d5e6f...");
+            println!();
+            return Ok(());
+        }
+        
+        if args[0] == "add" {
+            if args.len() < 2 {
+                ui::print_error("Usage: member add <user_id>");
+                ui::print_info("Provide the user's ID (64 hex chars)");
+                return Ok(());
+            }
+            
+            // Parse user_id from hex string (handle both raw hex and UserId(...) format)
+            let user_id_str = args[1];
+            let user_id_hex = user_id_str.trim_start_matches("UserId(").trim_end_matches(')');
+            
+            let decoded = hex::decode(user_id_hex)
+                .context("Invalid user ID hex")?;
+            if decoded.len() != 32 {
+                ui::print_error(&format!("User ID must be 32 bytes (64 hex chars), got {} bytes", decoded.len()));
+                return Ok(());
+            }
+            let mut user_id_bytes = [0u8; 32];
+            user_id_bytes.copy_from_slice(&decoded);
+            let user_id = spaceway_core::types::UserId(user_id_bytes);
+            
+            println!();
+            ui::print_info(&format!("Adding {} to MLS encryption group...", hex::encode(&user_id.0[..8])));
+            println!();
+            println!("  This will:");
+            println!("  1. Fetch their KeyPackage from DHT");
+            println!("  2. Add them to the MLS group");
+            println!("  3. Send them a Welcome message");
+            println!("  4. Rotate encryption keys (new epoch)");
+            println!();
+            
+            let client = self.client.lock().await;
+            match client.add_member_with_mls(
+                space_id,
+                user_id,
+                spaceway_core::types::Role::Member
+            ).await {
+                Ok(_) => {
+                    ui::print_success(&format!("User {} added to MLS group!", hex::encode(&user_id.0[..8])));
+                    println!();
+                    println!("  ✓ User can now decrypt messages in this space");
+                    println!();
+                }
+                Err(e) => {
+                    let error_msg = format!("{}", e);
+                    
+                    if error_msg.contains("DuplicateSignatureKey") {
+                        ui::print_error("User is already in the MLS encryption group!");
+                        println!();
+                        println!("  This user has already been added to the MLS group for this space.");
+                        println!("  Each user can only be added once.");
+                        println!();
+                        println!("  Note: Space creators are automatically added to their MLS group.");
+                        println!();
+                    } else if error_msg.contains("NotFound") || error_msg.contains("No KeyPackages") {
+                        ui::print_error("User hasn't published KeyPackages yet");
+                        println!();
+                        println!("  Tell the user to run:");
+                        println!("  > keypackage publish");
+                        println!();
+                    } else if error_msg.contains("quorum") || error_msg.contains("DHT") {
+                        ui::print_error("DHT quorum not reached");
+                        println!();
+                        println!("  Need more peers in the network to fetch KeyPackages from DHT.");
+                        println!("  For 2-peer setup, consider direct KeyPackage exchange.");
+                        println!();
+                    } else {
+                        ui::print_error(&format!("Failed to add member to MLS: {}", e));
+                        println!();
+                        println!("  Possible reasons:");
+                        println!("  • User hasn't published KeyPackages (tell them: keypackage publish)");
+                        println!("  • DHT quorum not reached (need more peers)");
+                        println!("  • User is already in the MLS group");
+                        println!();
+                    }
+                }
+            }
+        } else {
+            ui::print_error("Usage: member add <user_id>");
+        }
+        
+        Ok(())
+    }
+    
+    async fn cmd_keypackage(&mut self, args: &[&str]) -> Result<()> {
+        if args.is_empty() {
+            ui::print_error("Usage: keypackage publish");
+            ui::print_info("Publishes your KeyPackages to DHT for MLS encryption");
+            println!();
+            println!("  This allows others to add you to encrypted spaces");
+            println!();
+            return Ok(());
+        }
+        
+        if args[0] == "publish" {
+            println!();
+            ui::print_info("Publishing KeyPackages to DHT...");
+            println!();
+            println!("  Generating 10 KeyPackages...");
+            
+            let client = self.client.lock().await;
+            match client.publish_key_packages_to_dht().await {
+                Ok(_) => {
+                    ui::print_success("Published 10 KeyPackages to DHT");
+                    println!();
+                    println!("  ✓ Others can now add you to MLS encryption groups");
+                    println!("  ✓ KeyPackages will be consumed as you join groups");
+                    println!();
+                    println!("  Tip: Re-run this command periodically to refresh expired packages");
+                    println!();
+                }
+                Err(e) => {
+                    ui::print_error(&format!("Failed to publish KeyPackages: {}", e));
+                    println!();
+                    println!("  Possible reasons:");
+                    println!("  • DHT quorum not reached (need more peers)");
+                    println!("  • Network connectivity issues");
+                    println!();
+                }
+            }
+        } else {
+            ui::print_error("Usage: keypackage publish");
+        }
+        
         Ok(())
     }
 }

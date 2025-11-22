@@ -190,6 +190,7 @@ impl SpaceManager {
         let signer = openmls_basic_credential::SignatureKeyPair::new(
             mls_config.ciphersuite.signature_algorithm()
         ).map_err(|e| Error::Crypto(format!("Failed to create signer: {:?}", e)))?;
+        let signer = std::sync::Arc::new(signer); // Wrap in Arc
         
         let mls_group = MlsGroup::create(
             space_id,
@@ -265,6 +266,7 @@ impl SpaceManager {
         let signer = openmls_basic_credential::SignatureKeyPair::new(
             mls_config.ciphersuite.signature_algorithm()
         ).map_err(|e| Error::Crypto(format!("Failed to create signer: {:?}", e)))?;
+        let signer = std::sync::Arc::new(signer); // Wrap in Arc
         
         let mls_group = MlsGroup::create(
             space_id,
@@ -534,6 +536,8 @@ impl SpaceManager {
     }
     
     /// Remove a member from a Space (kick)
+    /// 
+    /// Returns the Commit message that must be broadcast to remaining members
     pub fn remove_member(
         &mut self,
         space_id: SpaceId,
@@ -541,7 +545,7 @@ impl SpaceManager {
         author: UserId,
         author_keypair: &crate::crypto::signing::Keypair,
         provider: &DescordProvider,
-    ) -> Result<CrdtOp> {
+    ) -> Result<(CrdtOp, Option<openmls::framing::MlsMessageOut>)> {
         // Check space exists
         let space = self.spaces.get_mut(&space_id)
             .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
@@ -595,27 +599,30 @@ impl SpaceManager {
         space.remove_member(&user_id);
         
         // MLS key rotation: Remove member from MLS group
-        if let Some(mls_group) = self.mls_groups.get_mut(&space_id) {
+        let commit_msg = if let Some(mls_group) = self.mls_groups.get_mut(&space_id) {
             // Remove member and rotate keys
             match mls_group.remove_member_with_key_rotation(&user_id, &author, provider) {
-                Ok(()) => {
+                Ok(commit) => {
                     println!("✓ MLS keys rotated - removed member can't decrypt future messages");
+                    Some(commit)
                 }
                 Err(e) => {
                     eprintln!("⚠ Warning: MLS key rotation failed: {}", e);
                     eprintln!("  Removed member may still be able to decrypt new messages");
                     // Continue anyway - the member is still removed from the Space
+                    None
                 }
             }
         } else {
             eprintln!("⚠ Warning: No MLS group found for Space");
             eprintln!("  This Space may not have E2E encryption enabled");
-        }
+            None
+        };
         
         self.operations.insert(op.op_id, op.clone());
         self.validator.apply_op(&op);
         
-        Ok(op)
+        Ok((op, commit_msg))
     }
     
     /// Get a Space by ID
@@ -651,6 +658,16 @@ impl SpaceManager {
     /// Get mutable MLS group for a Space (for encryption/decryption)
     pub fn get_mls_group_mut(&mut self, space_id: &SpaceId) -> Option<&mut MlsGroup> {
         self.mls_groups.get_mut(space_id)
+    }
+    
+    /// Store an MLS group for a Space (e.g., after processing a Welcome message)
+    pub fn store_mls_group(&mut self, space_id: SpaceId, mls_group: MlsGroup) {
+        self.mls_groups.insert(space_id, mls_group);
+    }
+    
+    /// Get mutable iterator over all MLS groups (for processing Commits)
+    pub fn mls_groups_mut(&mut self) -> impl Iterator<Item = (&SpaceId, &mut MlsGroup)> {
+        self.mls_groups.iter_mut()
     }
     
     /// Generate a random invite code (8 characters, alphanumeric)

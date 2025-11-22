@@ -134,6 +134,9 @@ struct NetworkWorker {
     
     /// Pending DHT PUT queries: QueryId -> (response_channel, start_time)
     pending_put_queries: HashMap<kad::QueryId, (oneshot::Sender<Result<()>>, Instant)>,
+    
+    /// Last time we checked for DHT peers and possibly triggered bootstrap
+    last_bootstrap_check: Instant,
 }
 
 impl NetworkNode {
@@ -245,6 +248,7 @@ impl NetworkNode {
             command_rx,
             pending_get_queries: HashMap::new(),
             pending_put_queries: HashMap::new(),
+            last_bootstrap_check: Instant::now(),
         };
         
         // Listen on configured addresses or default
@@ -399,39 +403,95 @@ impl NetworkNode {
     
     /// Publish to a GossipSub topic
     pub async fn publish(&mut self, topic: &str, data: Vec<u8>) -> Result<()> {
+        eprintln!("🟢 [publish] START: topic={}, data_size={} bytes", topic, data.len());
+        
         let (tx, rx) = oneshot::channel();
+        eprintln!("🟢 [publish] Sending Publish command to network thread...");
         self.command_tx.send(NetworkCommand::Publish { 
             topic: topic.to_string(), 
             data,
             response: tx 
         })
             .map_err(|_| Error::Network("Network thread died".to_string()))?;
-        rx.await
-            .map_err(|_| Error::Network("Response channel closed".to_string()))?
+        
+        eprintln!("🟢 [publish] Command sent, awaiting response...");
+        let result = rx.await;
+        
+        match &result {
+            Ok(Ok(_)) => eprintln!("🟢 [publish] END: ✓ Success"),
+            Ok(Err(e)) => eprintln!("🟢 [publish] END: ✗ Error: {}", e),
+            Err(_) => eprintln!("🟢 [publish] END: ✗ Response channel closed"),
+        }
+        
+        result.map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
     
     /// Put a value in the DHT
     pub async fn dht_put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        eprintln!("🔶 [dht_put] START: key={}, value_size={} bytes", 
+                 hex::encode(&key[..std::cmp::min(8, key.len())]), value.len());
+        
         let (tx, rx) = oneshot::channel();
+        eprintln!("🔶 [dht_put] Sending DhtPut command to network thread...");
         self.command_tx.send(NetworkCommand::DhtPut {
-            key,
+            key: key.clone(),
             value,
             response: tx
         })
             .map_err(|_| Error::Network("Network thread died".to_string()))?;
-        rx.await
+        
+        eprintln!("🔶 [dht_put] Command sent, awaiting response with 12s timeout...");
+        
+        // Add timeout wrapper to ensure we don't wait forever
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(12), // Slightly longer than query timeout
+            rx
+        )
+        .await;
+        
+        match &result {
+            Ok(Ok(Ok(_))) => eprintln!("🔶 [dht_put] END: ✓ Success"),
+            Ok(Ok(Err(e))) => eprintln!("🔶 [dht_put] END: ✗ Network error: {}", e),
+            Ok(Err(_)) => eprintln!("🔶 [dht_put] END: ✗ Response channel closed"),
+            Err(_) => eprintln!("🔶 [dht_put] END: ✗ TIMEOUT after 12 seconds"),
+        }
+        
+        result
+            .map_err(|_| Error::Network("DHT PUT operation timed out".to_string()))?
             .map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
     
     /// Get values from the DHT
     pub async fn dht_get(&mut self, key: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+        eprintln!("🔷 [dht_get] START: key={}", 
+                 hex::encode(&key[..std::cmp::min(8, key.len())]));
+        
         let (tx, rx) = oneshot::channel();
+        eprintln!("🔷 [dht_get] Sending DhtGet command to network thread...");
         self.command_tx.send(NetworkCommand::DhtGet {
-            key,
+            key: key.clone(),
             response: tx
         })
             .map_err(|_| Error::Network("Network thread died".to_string()))?;
-        rx.await
+        
+        eprintln!("🔷 [dht_get] Command sent, awaiting response with 12s timeout...");
+        
+        // Add timeout wrapper to ensure we don't wait forever
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(12), // Slightly longer than query timeout
+            rx
+        )
+        .await;
+        
+        match &result {
+            Ok(Ok(Ok(values))) => eprintln!("🔷 [dht_get] END: ✓ Success ({} values)", values.len()),
+            Ok(Ok(Err(e))) => eprintln!("🔷 [dht_get] END: ✗ Network error: {}", e),
+            Ok(Err(_)) => eprintln!("🔷 [dht_get] END: ✗ Response channel closed"),
+            Err(_) => eprintln!("🔷 [dht_get] END: ✗ TIMEOUT after 12 seconds"),
+        }
+        
+        result
+            .map_err(|_| Error::Network("DHT GET operation timed out".to_string()))?
             .map_err(|_| Error::Network("Response channel closed".to_string()))?
     }
 }
@@ -439,6 +499,9 @@ impl NetworkNode {
 impl NetworkWorker {
     /// Run the network worker loop
     async fn run(mut self) {
+        // Create a timer that fires every second to check timeouts
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        
         loop {
             tokio::select! {
                 // Handle swarm events
@@ -476,11 +539,15 @@ impl NetworkWorker {
                             let _ = response.send(result);
                         }
                         NetworkCommand::Publish { topic, data, response } => {
+                            eprintln!("🟣 [NetworkWorker] Received Publish command for topic: {}, size: {} bytes", topic, data.len());
                             let topic = gossipsub::IdentTopic::new(topic);
+                            eprintln!("🟣 [NetworkWorker] Calling gossipsub.publish...");
                             let result = self.swarm.behaviour_mut().gossipsub.publish(topic, data)
                                 .map(|_| ())
                                 .map_err(|e| Error::Network(format!("Publish failed: {}", e)));
+                            eprintln!("🟣 [NetworkWorker] Publish result: {:?}, sending response...", result.is_ok());
                             let _ = response.send(result);
+                            eprintln!("🟣 [NetworkWorker] Response sent");
                         }
                         NetworkCommand::GetListeners { response } => {
                             let listeners: Vec<Multiaddr> = self.swarm.listeners().cloned().collect();
@@ -528,6 +595,21 @@ impl NetworkWorker {
                             let _ = response.send(Ok(relays));
                         }
                         NetworkCommand::DhtPut { key, value, response } => {
+                            // Check if we have any peers in the routing table
+                            let peer_count: usize = self.swarm.behaviour_mut().kademlia
+                                .kbuckets()
+                                .map(|bucket| bucket.iter().count())
+                                .sum();
+                            
+                            eprintln!("🔍 DHT PUT: {} peers in routing table", peer_count);
+                            
+                            if peer_count == 0 {
+                                eprintln!("⚠️  No DHT peers available, triggering bootstrap...");
+                                if let Err(e) = self.swarm.behaviour_mut().kademlia.bootstrap() {
+                                    eprintln!("⚠️  Bootstrap failed: {:?}", e);
+                                }
+                            }
+                            
                             // Store value in DHT
                             let record_key = libp2p::kad::RecordKey::new(&key);
                             let record = libp2p::kad::Record {
@@ -540,10 +622,12 @@ impl NetworkWorker {
                             match self.swarm.behaviour_mut().kademlia
                                 .put_record(record, libp2p::kad::Quorum::One) {
                                 Ok(query_id) => {
+                                    eprintln!("🔍 DHT PUT query started: {:?}", query_id);
                                     // Track pending query
                                     self.pending_put_queries.insert(query_id, (response, Instant::now()));
                                 }
                                 Err(e) => {
+                                    eprintln!("❌ DHT PUT failed immediately: {:?}", e);
                                     let _ = response.send(Err(Error::Network(format!("DHT put failed: {:?}", e))));
                                 }
                             }
@@ -561,16 +645,44 @@ impl NetworkWorker {
                         }
                     }
                 }
+                // Timer tick for periodic checks
+                _ = interval.tick() => {
+                    self.check_query_timeouts();
+                    self.check_dht_peers();
+                }
             }
-            
-            // Check for timed-out queries (30 second timeout)
-            self.check_query_timeouts();
+        }
+    }
+    
+    /// Check if we have DHT peers and trigger bootstrap if needed
+    fn check_dht_peers(&mut self) {
+        const BOOTSTRAP_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+        let now = Instant::now();
+        
+        // Only check periodically
+        if now.duration_since(self.last_bootstrap_check) < BOOTSTRAP_CHECK_INTERVAL {
+            return;
+        }
+        
+        self.last_bootstrap_check = now;
+        
+        // Check if we have any peers in the routing table
+        let peer_count: usize = self.swarm.behaviour_mut().kademlia
+            .kbuckets()
+            .map(|bucket| bucket.iter().count())
+            .sum();
+        
+        if peer_count == 0 {
+            eprintln!("⚠️  No DHT peers in routing table, triggering bootstrap...");
+            if let Err(e) = self.swarm.behaviour_mut().kademlia.bootstrap() {
+                eprintln!("   Bootstrap failed: {:?} (this is normal if no bootstrap peers configured)", e);
+            }
         }
     }
     
     /// Check for and clean up timed-out DHT queries
     fn check_query_timeouts(&mut self) {
-        const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+        const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
         let now = Instant::now();
         
         // Collect timed-out GET queries
@@ -586,8 +698,10 @@ impl NetworkWorker {
             .collect();
         
         // Remove and notify timed-out GET queries
-        for query_id in timed_out_gets {
-            if let Some((response, _)) = self.pending_get_queries.remove(&query_id) {
+        for query_id in timed_out_gets.iter() {
+            if let Some((response, start_time)) = self.pending_get_queries.remove(&query_id) {
+                let elapsed = now.duration_since(start_time);
+                eprintln!("⏱️  DHT GET query timed out after {:?}: {:?}", elapsed, query_id);
                 let _ = response.send(Err(Error::Network("DHT GET query timed out".to_string())));
             }
         }
@@ -605,10 +719,19 @@ impl NetworkWorker {
             .collect();
         
         // Remove and notify timed-out PUT queries
-        for query_id in timed_out_puts {
-            if let Some((response, _)) = self.pending_put_queries.remove(&query_id) {
+        for query_id in timed_out_puts.iter() {
+            if let Some((response, start_time)) = self.pending_put_queries.remove(&query_id) {
+                let elapsed = now.duration_since(start_time);
+                eprintln!("⏱️  DHT PUT query timed out after {:?}: {:?}", elapsed, query_id);
                 let _ = response.send(Err(Error::Network("DHT PUT query timed out".to_string())));
             }
+        }
+        
+        // Report how many queries are being checked
+        if !timed_out_gets.is_empty() || !timed_out_puts.is_empty() {
+            eprintln!("🕐 Timeout check: {} GET, {} PUT queries timed out (tracking {} GET, {} PUT total)", 
+                     timed_out_gets.len(), timed_out_puts.len(),
+                     self.pending_get_queries.len(), self.pending_put_queries.len());
         }
     }
     
@@ -621,10 +744,12 @@ impl NetworkWorker {
             SwarmEvent::Behaviour(behaviour_event) => {
                 self.handle_behaviour_event(behaviour_event).await;
             }
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                 println!("✅ Connection established with peer: {}", peer_id);
                 // Add peer as explicit GossipSub peer for small networks
                 self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                // Add peer to Kademlia routing table so DHT operations can find it
+                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
                 let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
@@ -692,18 +817,24 @@ impl NetworkWorker {
                             let _ = response.send(Err(Error::Network(format!("DHT GET failed: {:?}", e))));
                         }
                     }
-                    kad::QueryResult::PutRecord(Ok(_)) => {
+                    kad::QueryResult::PutRecord(Ok(ok)) => {
                         // DHT PUT query completed successfully
-                        if let Some((response, _start_time)) = self.pending_put_queries.remove(&id) {
-                            println!("✓ DHT PUT: Record stored successfully");
+                        if let Some((response, start_time)) = self.pending_put_queries.remove(&id) {
+                            let elapsed = start_time.elapsed();
+                            eprintln!("✓ DHT PUT: Record stored successfully in {:?}, query_id: {:?}", elapsed, id);
                             let _ = response.send(Ok(()));
+                        } else {
+                            eprintln!("⚠️  DHT PUT completed but query not tracked: {:?}", id);
                         }
                     }
                     kad::QueryResult::PutRecord(Err(e)) => {
                         // DHT PUT query failed
-                        if let Some((response, _start_time)) = self.pending_put_queries.remove(&id) {
-                            println!("✗ DHT PUT failed: {:?}", e);
+                        if let Some((response, start_time)) = self.pending_put_queries.remove(&id) {
+                            let elapsed = start_time.elapsed();
+                            eprintln!("✗ DHT PUT failed after {:?}: {:?}, query_id: {:?}", elapsed, e, id);
                             let _ = response.send(Err(Error::Network(format!("DHT PUT failed: {:?}", e))));
+                        } else {
+                            eprintln!("⚠️  DHT PUT failed but query not tracked: {:?}, error: {:?}", id, e);
                         }
                     }
                     _ => {}
@@ -751,11 +882,13 @@ impl NetworkWorker {
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
                 println!("✓ Relay reservation accepted by {:?}", relay_peer_id);
             }
-            relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+            relay::client::Event::OutboundCircuitEstablished { relay_peer_id, limit } => {
                 println!("✓ Circuit established via relay {:?} (IP hidden)", relay_peer_id);
+                // Note: The actual destination peer will be added to Kademlia via ConnectionEstablished event
             }
-            relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+            relay::client::Event::InboundCircuitEstablished { src_peer_id, limit } => {
                 println!("✓ Inbound circuit from {:?} (their IP hidden)", src_peer_id);
+                // Note: The src_peer will be added to Kademlia via ConnectionEstablished event
             }
             _ => {
                 // Log all other events for debugging

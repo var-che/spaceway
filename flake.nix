@@ -79,6 +79,9 @@
             export ROCKSDB_LIB_DIR="${pkgs.rocksdb}/lib"
             export SNAPPY_LIB_DIR="${pkgs.snappy}/lib"
             
+            # Set LD_LIBRARY_PATH so runtime linker can find shared libraries
+            export LD_LIBRARY_PATH="${pkgs.rocksdb}/lib:${pkgs.snappy}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.lz4}/lib:${pkgs.zstd}/lib:''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            
             # Ensure cargo home is set
             export CARGO_HOME="''${CARGO_HOME:-$HOME/.cargo}"
             export PATH="$CARGO_HOME/bin:$PATH"

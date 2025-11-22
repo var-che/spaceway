@@ -19,6 +19,7 @@ use crate::{Error, Result};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// A KeyPackage bundle with metadata
 #[derive(Clone, Serialize, Deserialize)]
@@ -41,8 +42,8 @@ pub struct KeyPackageStore {
     /// User ID for this client
     user_id: UserId,
     
-    /// Signer keypair
-    signer: SignatureKeyPair,
+    /// Signer keypair (wrapped in Arc for sharing)
+    signer: Arc<SignatureKeyPair>,
     
     /// Ciphersuite to use
     ciphersuite: Ciphersuite,
@@ -56,7 +57,7 @@ impl KeyPackageStore {
     /// Create a new KeyPackage store
     pub fn new(
         user_id: UserId,
-        signer: SignatureKeyPair,
+        signer: Arc<SignatureKeyPair>,
         ciphersuite: Ciphersuite,
     ) -> Self {
         Self {
@@ -97,7 +98,7 @@ impl KeyPackageStore {
                 .build(
                     self.ciphersuite,
                     provider,
-                    &self.signer,
+                    &*self.signer,  // Deref Arc to get &SignatureKeyPair
                     credential_with_key.clone(),
                 )
                 .map_err(|e| Error::Crypto(format!("Failed to create KeyPackage: {:?}", e)))?;
@@ -185,6 +186,11 @@ impl KeyPackageStore {
     /// Get the number of available KeyPackages
     pub fn available_count(&self) -> usize {
         self.available_bundles.len()
+    }
+    
+    /// Get a clone of the signer Arc (for Welcome message processing)
+    pub fn signer(&self) -> Arc<SignatureKeyPair> {
+        Arc::clone(&self.signer)
     }
 
     /// Consume a KeyPackage (removes it from available pool)

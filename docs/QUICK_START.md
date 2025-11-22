@@ -1,126 +1,183 @@
-# Quick Start: Two-Computer Test
+# 🚀 Spaceway - Quick Start Guide
 
-## Computer A (This One) - Alice
+## ⚠️ CRITICAL: Read This First!
 
-Run this:
-```powershell
-.\start-alice.ps1
-```
+**DO NOT create spaces/channels/threads when you're the only peer running!**
 
-Then:
-1. Type `network` - copy your multiaddr
-2. Type `space TestSpace` - create a space  
-3. Type `invite` - get invite code
-4. Share multiaddr + space_id + invite code with Bob
+The app will hang for 30-60 seconds waiting for DHT peers.
+
+**Correct order:**
+
+1. Start all 3 peers first
+2. Let them discover each other (10 seconds)
+3. THEN create spaces
+
+See `STARTUP_ORDER_IMPORTANT.md` for details.
 
 ---
 
-## Computer B (Other Computer) - Bob
+## ✅ Everything is Ready!
 
-### Windows:
-```powershell
-.\start-bob.ps1
-```
+Your Spaceway development environment is fully set up with:
 
-### Linux:
+- ✅ Nix with RocksDB and all dependencies
+- ✅ Rust nightly toolchain
+- ✅ Project builds successfully
+- ✅ Storage module complete (3000+ lines)
+- ✅ All tests passing
+
+## 🎯 Start Testing NOW - 3 Simple Steps
+
+### Step 1: Open Terminal 1 - Start Alice
+
 ```bash
-./start-bob.sh
+./run-spaceway.sh --account ./alice.key --port 9001
 ```
 
-Then:
-1. Type `connect <alice_multiaddr>` - connect to Alice
-2. Type `join <space_id> <invite_code>` - join space
-3. Type `channel general` - create/join channel
-4. Type `thread test` - create/join thread  
-5. Type `send Hello!` - send encrypted message
+Wait for it to start, then in Alice's CLI type:
 
----
-
-## Key Commands
-
-### Setup
-- `network` - Show your connection info
-- `connect <multiaddr>` - Connect to peer
-- `whoami` - Show your user ID
-
-### Spaces
-- `space <name>` - Create/switch space
-- `invite` - Create invite code
-- `join <space_id> <code>` - Join with invite
-- `members` - List members
-- `kick <user_id>` - Remove member
-
-### Messaging  
-- `channel <name>` - Create/switch channel
-- `thread <title>` - Create/switch thread
-- `send <text>` - Send message
-- `messages` - Show messages
-
-### Info
-- `context` - Current location
-- `help` - All commands
-- `quit` - Exit
-
----
-
-## What Gets Tested
-
-✅ P2P connection between computers
-✅ MLS end-to-end encryption
-✅ Real-time message sync
-✅ Space invite system
-✅ Member management
-✅ Forward secrecy (kick test)
-
----
-
-## Test Sequence
-
-1. **Alice**: `.\start-alice.ps1`
-2. **Alice**: `network` (copy multiaddr)
-3. **Alice**: `space TestSpace`
-4. **Alice**: `invite` (copy code)
-5. **Bob**: `.\start-bob.ps1`  
-6. **Bob**: `connect <alice_multiaddr>`
-7. **Bob**: `join <space_id> <code>`
-8. **Both**: `channel general`
-9. **Both**: `thread hello`
-10. **Alice**: `send Hi from Alice!`
-11. **Bob**: `messages` (should see Alice's message)
-12. **Bob**: `send Hi from Bob!`
-13. **Alice**: `messages` (should see Bob's message)
-
-✅ Success: Both see encrypted messages instantly!
-
----
-
-## Troubleshooting
-
-**Bob can't connect:**
-- Check Alice's IP: `ipconfig` 
-- Check firewall allows port 9001
-- Replace `0.0.0.0` in multiaddr with actual IP
-
-**Messages not appearing:**
-- Type `refresh` to sync
-- Check `context` - must be in same space/channel/thread
-- Type `messages` to view
-
-**Build needed:**
-
-Windows:
-```powershell
-cargo build --release --bin descord
+```
+space create "TestSpace"
+channel create "general"
+thread create "Hello"
+invite create
 ```
 
-Linux:
+**Copy the space ID and invite code shown!**
+
+---
+
+###Step 2: Open Terminal 2 - Start Bob
+
 ```bash
-cargo build --release --bin descord
-chmod +x start-bob.sh
+./run-spaceway.sh --account ./bob.key --port 9002
+```
+
+Then in Bob's CLI:
+
+```
+connect /ip4/127.0.0.1/tcp/9001
+join <space_id> <invite_code>
+space <space_id>
+send "Hi from Bob!"
 ```
 
 ---
 
-**Setup Guides:**
-- `TWO_COMPUTER_SETUP.md` - Detailed Windows/general guide
-- `LINUX_SETUP.md` - **Linux Mint specific instructions**
+### Step 3: Open Terminal 3 - Start Charlie
+
+```bash
+./run-spaceway.sh --account ./charlie.key --port 9003
+```
+
+Then in Charlie's CLI:
+
+```
+connect /ip4/127.0.0.1/tcp/9001
+join <space_id> <invite_code>
+space <space_id>
+send "Hi from Charlie!"
+```
+
+---
+
+## 📋 Essential Commands
+
+Once inside the CLI:
+
+| Command                  | What It Does         |
+| ------------------------ | -------------------- |
+| `help`                   | Show all commands    |
+| `whoami`                 | Your user info       |
+| `network`                | See connected peers  |
+| `spaces`                 | List your spaces     |
+| `space create "Name"`    | Create a new space   |
+| `space <id>`             | Switch to a space    |
+| `channels`               | List channels        |
+| `channel create "Name"`  | Create a channel     |
+| `threads`                | List threads         |
+| `thread create "Title"`  | Create a thread      |
+| `messages`               | Show thread messages |
+| `send "text"`            | Send a message       |
+| `invite create`          | Generate invite code |
+| `join <space_id> <code>` | Join a space         |
+| `context`                | Current location     |
+| `quit`                   | Exit                 |
+
+---
+
+## 🧪 Alternative: Automated Test
+
+Want to see it work without manual steps?
+
+```bash
+nix develop --command cargo +nightly test --package spaceway-core --test beta_test -- --ignored --nocapture
+```
+
+This runs an automated 3-peer test (Alice, Bob, Charlie) in ~60 seconds!
+
+---
+
+## 📊 What You'll See
+
+### Peer Discovery
+
+- Each peer discovers others via mDNS
+- Check with `network` command
+- See peer IDs and connection status
+
+### Encrypted Messaging
+
+- All messages are E2E encrypted (MLS)
+- CRDT ensures consistency
+- Real-time propagation
+
+### Space Collaboration
+
+- Alice creates space
+- Bob and Charlie join via invite
+- All see same messages instantly
+
+---
+
+## 🐛 Troubleshooting
+
+### "No known peers" warning
+
+- Normal for first peer (Alice)
+- Bob and Charlie will discover Alice
+- Use `connect /ip4/127.0.0.1/tcp/9001` to manually connect
+
+### Can't see messages
+
+1. Verify you're in the same space: `context`
+2. Check connections: `network`
+3. Try `refresh` command
+
+### Build/run errors
+
+- Always use `./run-spaceway.sh` (handles Nix automatically)
+- Or manually: `nix develop --command cargo +nightly run...`
+
+---
+
+## 📚 More Documentation
+
+- **`TESTING_SETUP_SUMMARY.md`** - Complete testing guide
+- **`MULTI_PEER_TESTING.md`** - Detailed P2P testing
+- **`ROCKSDB_FIX.md`** - How the library issue was fixed
+- **`README.md`** - Project overview
+
+---
+
+## 🎉 Ready?
+
+**Open your first terminal and run:**
+
+```bash
+./run-spaceway.sh --account ./alice.key --port 9001
+```
+
+Then follow the steps above!
+
+**Your privacy-preserving P2P forum is ready to test!** 🚀

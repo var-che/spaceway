@@ -32,10 +32,14 @@ spaceway-data/
 
 # Ignore logs
 *.log
+tests/logs/
 
 # Ignore temporary files
 tmp/
 temp/
+
+# Docs are not needed to be commited
+docs/
 
 # Ignore test data and results
 tests/data/
@@ -44,5 +48,11 @@ core/tests/test_data/
 *-data/
 *.history
 *_STATUS.txt
+
+# Ignore test binaries in root (alice, bob, charlie, etc.)
+/alice
+/bob
+/charlie
+/dave
 *_RESULTS.txt
 SUCCESS.txt

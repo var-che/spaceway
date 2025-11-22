@@ -48,8 +48,12 @@ def main():
     print(f"{Color.CYAN}║  MLS Three Members Test                       ║{Color.NC}")
     print(f"{Color.CYAN}╚═══════════════════════════════════════════════╝{Color.NC}\n")
     
-    # Cleanup
-    os.system('rm -rf *-data/ *.key *.history alice_3m.log bob_3m.log charlie_3m.log 2>/dev/null')
+    # Setup test directory structure
+    test_dir = 'tests/test-runs/three-members'
+    os.makedirs(test_dir, exist_ok=True)
+    
+    # Cleanup old test artifacts
+    os.system(f'rm -rf {test_dir}/* 2>/dev/null')
     
     # Build (use debug build since it's faster and we already have it)
     binary_path = './target/debug/spaceway'
@@ -73,37 +77,37 @@ def main():
         print(f"{Color.GREEN}✓ Using existing binary{Color.NC}")
     
     # Start clients
-    alice_log = open('alice_3m.log', 'w')
-    bob_log = open('bob_3m.log', 'w')
-    charlie_log = open('charlie_3m.log', 'w')
+    alice_log = open(f'{test_dir}/alice.log', 'w')
+    bob_log = open(f'{test_dir}/bob.log', 'w')
+    charlie_log = open(f'{test_dir}/charlie.log', 'w')
     
     print(f"{Color.CYAN}Starting Alice, Bob, and Charlie...{Color.NC}")
     
     alice = {
         'name': 'Alice',
         'proc': subprocess.Popen(
-            [binary_path, '--account', 'alice.key', '--port', '9001'],
+            [binary_path, '--account', f'{test_dir}/alice.key', '--port', '9001'],
             stdin=subprocess.PIPE, stdout=alice_log, stderr=subprocess.STDOUT, text=True, bufsize=1
         ),
-        'log': 'alice_3m.log'
+        'log': f'{test_dir}/alice.log'
     }
     
     bob = {
         'name': 'Bob',
         'proc': subprocess.Popen(
-            [binary_path, '--account', 'bob.key', '--port', '9002'],
+            [binary_path, '--account', f'{test_dir}/bob.key', '--port', '9002'],
             stdin=subprocess.PIPE, stdout=bob_log, stderr=subprocess.STDOUT, text=True, bufsize=1
         ),
-        'log': 'bob_3m.log'
+        'log': f'{test_dir}/bob.log'
     }
     
     charlie = {
         'name': 'Charlie',
         'proc': subprocess.Popen(
-            [binary_path, '--account', 'charlie.key', '--port', '9003'],
+            [binary_path, '--account', f'{test_dir}/charlie.key', '--port', '9003'],
             stdin=subprocess.PIPE, stdout=charlie_log, stderr=subprocess.STDOUT, text=True, bufsize=1
         ),
-        'log': 'charlie_3m.log'
+        'log': f'{test_dir}/charlie.log'
     }
     
     try:

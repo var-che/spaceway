@@ -11,6 +11,7 @@ use spaceway_core::{Client, ClientConfig};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
+use std::io::{self, BufRead};
 use tracing::info;
 
 mod account;
@@ -114,10 +115,37 @@ async fn main() -> Result<()> {
     // Start client in background
     let client_handle = handler.start_background().await?;
 
+    // Check if stdin is a terminal or a pipe
+    let is_terminal = atty::is(atty::Stream::Stdin);
+
+    if is_terminal {
+        // Interactive mode with rustyline (history, editing, etc.)
+        run_interactive_mode(&mut handler, &mut account_mgr, args.account).await?;
+    } else {
+        // Piped/non-interactive mode - simple line reading
+        println!("{}", "Running in non-interactive mode (piped input)".bright_yellow());
+        run_piped_mode(&mut handler).await?;
+    }
+
+    // Stop client
+    client_handle.abort();
+
+    Ok(())
+}
+
+/// Interactive mode using rustyline for better UX
+async fn run_interactive_mode(
+    handler: &mut CommandHandler,
+    account_mgr: &mut AccountManager,
+    account_path: PathBuf,
+) -> Result<()> {
     // Interactive REPL
     let mut rl = DefaultEditor::new()?;
-    let history_file = args.account.with_extension("history");
+    let history_file = account_path.with_extension("history");
     let _ = rl.load_history(&history_file);
+
+    println!("{}", "Type 'help' for available commands, 'quit' to exit".bright_yellow());
+    println!();
 
     println!("{}", "Type 'help' for available commands, 'quit' to exit".bright_yellow());
     println!();
@@ -165,9 +193,43 @@ async fn main() -> Result<()> {
 
     // Save history
     let _ = rl.save_history(&history_file);
+    Ok(())
+}
 
-    // Stop client
-    client_handle.abort();
+/// Non-interactive mode for piped input (e.g., from tests)
+async fn run_piped_mode(handler: &mut CommandHandler) -> Result<()> {
+    let stdin = io::stdin();
+    let reader = stdin.lock();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Error reading input: {}", e);
+                break;
+            }
+        };
+
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match line {
+            "quit" | "exit" => {
+                println!("{}", "Goodbye!".bright_green());
+                break;
+            }
+            "help" => {
+                ui::print_help();
+            }
+            _ => {
+                if let Err(e) = handler.handle_command(line).await {
+                    ui::print_error(&format!("{}", e));
+                }
+            }
+        }
+    }
 
     Ok(())
 }

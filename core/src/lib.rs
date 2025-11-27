@@ -8,6 +8,7 @@
 pub mod client;
 pub mod crdt;
 pub mod crypto;
+pub mod dashboard;
 pub mod forum;
 pub mod mls;
 pub mod network;

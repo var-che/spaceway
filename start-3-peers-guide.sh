@@ -1,0 +1,70 @@
+#!/bin/bash
+# Start all three peers with proper coordination
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${CYAN}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║  Spaceway 3-Peer Test - Coordinated Startup   ║${NC}"
+echo -e "${CYAN}╚════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${YELLOW}⚠️  IMPORTANT: This script requires 3 terminal windows${NC}"
+echo ""
+echo "Please open 3 terminal windows/tabs and run these commands:"
+echo ""
+
+echo -e "${GREEN}Terminal 1 (Alice):${NC}"
+echo "  cd $(pwd)"
+echo "  ./run-spaceway.sh --account ./alice.key --port 9001"
+echo ""
+
+echo -e "${GREEN}Terminal 2 (Bob):${NC}"
+echo "  cd $(pwd)"
+echo "  ./run-spaceway.sh --account ./bob.key --port 9002"
+echo ""
+
+echo -e "${GREEN}Terminal 3 (Charlie):${NC}"
+echo "  cd $(pwd)"
+echo "  ./run-spaceway.sh --account ./charlie.key --port 9003"
+echo ""
+
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${YELLOW}📋 After all 3 start (wait ~10 seconds):${NC}"
+echo ""
+echo "In Bob's terminal:"
+echo "  connect /ip4/127.0.0.1/tcp/9001"
+echo "  network"
+echo ""
+echo "In Charlie's terminal:"
+echo "  connect /ip4/127.0.0.1/tcp/9001"
+echo "  network"
+echo ""
+echo -e "${GREEN}✅ When you see 2 peers in 'network' output:${NC}"
+echo ""
+echo "In Alice's terminal:"
+echo "  space create \"DevTeam\""
+echo "  channel create \"general\""
+echo "  invite create"
+echo "  (copy the space ID and invite code)"
+echo ""
+echo "In Bob's terminal:"
+echo "  join <space_id> <invite_code>"
+echo "  space <space_id>"
+echo "  send \"Hi from Bob!\""
+echo ""
+echo "In Charlie's terminal:"
+echo "  join <space_id> <invite_code>"
+echo "  space <space_id>"
+echo "  send \"Hi from Charlie!\""
+echo ""
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${RED}❌ DO NOT create spaces before peers are connected!${NC}"
+echo -e "${RED}   It will hang for 30-60 seconds.${NC}"
+echo ""
+echo -e "${GREEN}✅ See STARTUP_ORDER_IMPORTANT.md for more details${NC}"
+echo ""

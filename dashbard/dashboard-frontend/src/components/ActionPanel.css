@@ -1,0 +1,92 @@
+.action-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+.form-group select,
+.form-group input {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #c9d1d9;
+  font-size: 0.9rem;
+}
+
+.form-group select:focus,
+.form-group input:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.execute-btn {
+  background: #238636;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.execute-btn:hover {
+  background: #2ea043;
+}
+
+.execute-btn:active {
+  background: #1a7f37;
+}
+
+.result {
+  padding: 12px 15px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.result.success {
+  background: #1a472a;
+  border: 1px solid #2ea043;
+  color: #3fb950;
+}
+
+.result.error {
+  background: #3d1118;
+  border: 1px solid #da3633;
+  color: #f85149;
+}
+
+.error-header {
+  font-weight: 700;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  color: #ff7b72;
+}
+
+.error-message {
+  font-family: "Monaco", "Menlo", "Courier New", monospace;
+  font-size: 0.85rem;
+  color: #f85149;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.5rem;
+  border-radius: 4px;
+  border-left: 3px solid #da3633;
+}

@@ -4,7 +4,7 @@
 /// between clients that have been offline. Uses vector clocks for
 /// causal ordering and efficient delta sync.
 
-use super::{Storage, VectorClock, TombstoneSet, BlobHash};
+use super::{Storage, VectorClock, TombstoneSet, BlobHash, MessageIndex};
 use crate::types::{ThreadId, UserId, MessageId};
 use anyhow::{Context, Result, anyhow};
 use serde::{Serialize, Deserialize};
@@ -111,13 +111,14 @@ impl Storage {
 
             // Index the message (blob should already exist from separate transfer)
             // In a real implementation, blobs would be transferred separately
-            self.index_message(
-                *thread_id,
-                msg.message_id,
-                msg.author,
-                msg.timestamp,
-                msg.blob_hash,
-            )?;
+            let index = MessageIndex {
+                message_id: msg.message_id,
+                blob_hash: msg.blob_hash,
+                timestamp: msg.timestamp,
+                author: msg.author,
+                thread_id: *thread_id,
+            };
+            self.index_message(&index)?;
         }
 
         // Update vector clock
@@ -138,11 +139,11 @@ impl Storage {
         let mut missing = Vec::new();
 
         // Get all messages in the thread
-        let messages = self.get_thread_messages(thread_id)?;
+        let messages = self.get_thread_messages(thread_id, usize::MAX)?;
 
-        for (message_id, blob_hash, _timestamp) in messages {
+        for msg_index in messages {
             // Get message metadata
-            let metadata = self.get_blob_metadata(&blob_hash)?
+            let metadata = self.get_blob_metadata(&msg_index.blob_hash)?
                 .ok_or_else(|| anyhow!("Missing metadata for blob"))?;
 
             // Get the vector clock for this message
@@ -156,10 +157,10 @@ impl Storage {
             // This is simplified - real implementation would store per-message clocks
             
             missing.push(SyncMessage {
-                message_id,
+                message_id: msg_index.message_id,
                 author: metadata.uploader,
                 timestamp: metadata.uploaded_at,
-                blob_hash,
+                blob_hash: msg_index.blob_hash,
                 vector_clock: VectorClock::new(), // Would be per-message in real impl
             });
         }
@@ -224,18 +225,18 @@ impl Storage {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Vec<SyncMessage>> {
-        let messages = self.get_thread_messages(thread_id)?;
+        let messages = self.get_thread_messages(thread_id, usize::MAX)?;
         let mut sync_messages = Vec::new();
 
-        for (message_id, blob_hash, _timestamp) in messages {
-            let metadata = self.get_blob_metadata(&blob_hash)?
+        for msg_index in messages {
+            let metadata = self.get_blob_metadata(&msg_index.blob_hash)?
                 .ok_or_else(|| anyhow!("Missing metadata for blob"))?;
 
             sync_messages.push(SyncMessage {
-                message_id,
+                message_id: msg_index.message_id,
                 author: metadata.uploader,
                 timestamp: metadata.uploaded_at,
-                blob_hash,
+                blob_hash: msg_index.blob_hash,
                 vector_clock: VectorClock::new(), // Would be per-message in real impl
             });
         }

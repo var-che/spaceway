@@ -411,6 +411,67 @@ impl fmt::Display for ContentHash {
     }
 }
 
+/// Space membership mode (encryption level)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
+#[cbor(index_only)]
+pub enum SpaceMembershipMode {
+    /// Lightweight: Non-encrypted space membership, minimal overhead
+    /// Best for large communities (100k+ users) where channels provide encryption
+    #[n(0)]
+    Lightweight,
+    /// MLS: Space-level MLS group for encrypted space-wide features
+    /// Best for small teams/organizations needing space-level encryption
+    #[n(1)]
+    MLS,
+}
+
+impl Default for SpaceMembershipMode {
+    fn default() -> Self {
+        SpaceMembershipMode::MLS  // Default to encrypted for backwards compatibility
+    }
+}
+
+impl SpaceMembershipMode {
+    /// Whether this mode creates an MLS group at space level
+    pub fn uses_space_mls(&self) -> bool {
+        matches!(self, SpaceMembershipMode::MLS)
+    }
+
+    /// Whether this mode is lightweight (no space-level MLS)
+    pub fn is_lightweight(&self) -> bool {
+        matches!(self, SpaceMembershipMode::Lightweight)
+    }
+
+    /// Get user-facing description for this mode
+    pub fn description(&self) -> &'static str {
+        match self {
+            SpaceMembershipMode::Lightweight => 
+                "LIGHTWEIGHT - No space-level encryption. Channels will provide E2EE. \
+                 Suitable for large communities (100k+ users).",
+            SpaceMembershipMode::MLS => 
+                "MLS ENCRYPTED - Space-level MLS group. All members share encryption keys. \
+                 Best for small teams (<1000 users).",
+        }
+    }
+
+    /// Get short name for CLI display
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            SpaceMembershipMode::Lightweight => "lightweight",
+            SpaceMembershipMode::MLS => "mls",
+        }
+    }
+
+    /// Parse from string (for CLI input)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "lightweight" | "light" | "l" => Some(SpaceMembershipMode::Lightweight),
+            "mls" | "encrypted" | "m" => Some(SpaceMembershipMode::MLS),
+            _ => None,
+        }
+    }
+}
+
 /// Space visibility and discoverability
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
 #[cbor(index_only)]
@@ -630,6 +691,224 @@ impl Role {
             Role::Admin => 2,
             Role::Moderator => 1,
             Role::Member => 0,
+        }
+    }
+}
+
+// ============================================================================
+// Permission System (Discord-Lite)
+// ============================================================================
+
+/// Space-level permissions (bitfield for efficiency)
+/// Similar to Discord's permission system but simplified for decentralized use
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
+#[cbor(transparent)]
+pub struct SpacePermissions {
+    #[n(0)]
+    pub bits: u32,
+}
+
+impl SpacePermissions {
+    // Permission bits (32 possible permissions)
+    pub const CREATE_CHANNELS: u32    = 1 << 0;   // Can create channels
+    pub const DELETE_CHANNELS: u32    = 1 << 1;   // Can delete channels
+    pub const MANAGE_CHANNELS: u32    = 1 << 2;   // Can edit channel settings
+    pub const INVITE_MEMBERS: u32     = 1 << 3;   // Can create invites
+    pub const KICK_MEMBERS: u32       = 1 << 4;   // Can remove members from space
+    pub const BAN_MEMBERS: u32        = 1 << 5;   // Can ban members (future)
+    pub const MANAGE_ROLES: u32       = 1 << 6;   // Can assign/modify roles
+    pub const DELETE_MESSAGES: u32    = 1 << 7;   // Can delete any message
+    pub const PIN_MESSAGES: u32       = 1 << 8;   // Can pin messages
+    pub const MANAGE_SPACE: u32       = 1 << 9;   // Can edit space settings
+    pub const VIEW_AUDIT_LOG: u32     = 1 << 10;  // Can view audit log (future)
+    pub const MANAGE_MLS: u32         = 1 << 11;  // Can manage encryption settings
+    
+    /// Check if a specific permission is granted
+    pub fn has(&self, permission: u32) -> bool {
+        self.bits & permission != 0
+    }
+    
+    /// Grant a permission
+    pub fn grant(&mut self, permission: u32) {
+        self.bits |= permission;
+    }
+    
+    /// Revoke a permission
+    pub fn revoke(&mut self, permission: u32) {
+        self.bits &= !permission;
+    }
+    
+    /// Administrator has all permissions
+    pub fn admin() -> Self {
+        Self { bits: !0 }  // All bits set
+    }
+    
+    /// Moderator has content management permissions
+    pub fn moderator() -> Self {
+        Self {
+            bits: Self::CREATE_CHANNELS
+                | Self::INVITE_MEMBERS
+                | Self::KICK_MEMBERS
+                | Self::DELETE_MESSAGES
+                | Self::PIN_MESSAGES
+                | Self::MANAGE_CHANNELS
+        }
+    }
+    
+    /// Regular member has basic permissions
+    pub fn member() -> Self {
+        Self {
+            bits: Self::INVITE_MEMBERS  // Can invite friends
+        }
+    }
+    
+    /// No permissions
+    pub fn none() -> Self {
+        Self { bits: 0 }
+    }
+    
+    /// Check if has all admin permissions
+    pub fn is_admin(&self) -> bool {
+        self.bits == !0
+    }
+}
+
+impl Default for SpacePermissions {
+    fn default() -> Self {
+        Self::member()
+    }
+}
+
+/// Channel-level permissions (independent from space)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize, Deserialize, Debug)]
+#[cbor(transparent)]
+pub struct ChannelPermissions {
+    #[n(0)]
+    pub bits: u32,
+}
+
+impl ChannelPermissions {
+    pub const SEND_MESSAGES: u32      = 1 << 0;  // Can send messages
+    pub const DELETE_MESSAGES: u32    = 1 << 1;  // Can delete messages
+    pub const KICK_MEMBERS: u32       = 1 << 2;  // Can kick from THIS channel
+    pub const ADD_MEMBERS: u32        = 1 << 3;  // Can invite to THIS channel
+    pub const MANAGE_CHANNEL: u32     = 1 << 4;  // Can edit channel settings
+    pub const PIN_MESSAGES: u32       = 1 << 5;  // Can pin messages
+    pub const READ_HISTORY: u32       = 1 << 6;  // Can read message history
+    
+    pub fn has(&self, permission: u32) -> bool {
+        self.bits & permission != 0
+    }
+    
+    pub fn grant(&mut self, permission: u32) {
+        self.bits |= permission;
+    }
+    
+    pub fn revoke(&mut self, permission: u32) {
+        self.bits &= !permission;
+    }
+    
+    /// All channel permissions
+    pub fn all() -> Self {
+        Self { bits: !0 }
+    }
+    
+    /// Regular member permissions
+    pub fn member() -> Self {
+        Self {
+            bits: Self::SEND_MESSAGES
+                | Self::ADD_MEMBERS
+                | Self::READ_HISTORY
+        }
+    }
+    
+    /// No permissions
+    pub fn none() -> Self {
+        Self { bits: 0 }
+    }
+}
+
+impl Default for ChannelPermissions {
+    fn default() -> Self {
+        Self::member()
+    }
+}
+
+/// Role identifier (unique within a space)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct RoleId(pub Uuid);
+
+impl RoleId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for RoleId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Space role with position-based hierarchy
+/// Similar to Discord's role system
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct SpaceRole {
+    /// Unique role identifier
+    pub id: RoleId,
+    /// Display name
+    pub name: String,
+    /// Permissions bitfield
+    pub permissions: SpacePermissions,
+    /// Position in hierarchy (higher = more powerful)
+    /// Used to prevent privilege escalation
+    pub position: u32,
+    /// Optional color for UI (RGB)
+    pub color: Option<u32>,
+}
+
+impl SpaceRole {
+    /// Create a new role
+    pub fn new(name: String, permissions: SpacePermissions, position: u32) -> Self {
+        Self {
+            id: RoleId::new(),
+            name,
+            permissions,
+            position,
+            color: None,
+        }
+    }
+    
+    /// Create default Admin role
+    pub fn admin() -> Self {
+        Self {
+            id: RoleId::new(),
+            name: "Admin".to_string(),
+            permissions: SpacePermissions::admin(),
+            position: 100,
+            color: Some(0xFF0000), // Red
+        }
+    }
+    
+    /// Create default Moderator role
+    pub fn moderator() -> Self {
+        Self {
+            id: RoleId::new(),
+            name: "Moderator".to_string(),
+            permissions: SpacePermissions::moderator(),
+            position: 50,
+            color: Some(0x00FF00), // Green
+        }
+    }
+    
+    /// Create default Member role
+    pub fn member() -> Self {
+        Self {
+            id: RoleId::new(),
+            name: "Member".to_string(),
+            permissions: SpacePermissions::member(),
+            position: 0,
+            color: None,
         }
     }
 }

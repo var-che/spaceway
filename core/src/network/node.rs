@@ -311,6 +311,16 @@ impl NetworkNode {
         rx.await.unwrap_or_default()
     }
     
+    /// Get list of connected peer IDs
+    /// 
+    /// Returns empty list for now - will be implemented when we add the command
+    /// to query swarm.connected_peers()
+    pub async fn connected_peers(&self) -> Vec<PeerId> {
+        // TODO: Add NetworkCommand::GetConnectedPeers
+        // For now, return empty list
+        Vec::new()
+    }
+    
     /// Start listening on an address
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<()> {
         // Send command to worker thread - it will handle listening

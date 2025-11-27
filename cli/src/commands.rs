@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use spaceway_core::{Client, SpaceId, ChannelId, ThreadId};
+use spaceway_core::{Client, SpaceId, ChannelId, ThreadId, SpaceMembershipMode, SpaceVisibility};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -113,7 +113,7 @@ impl CommandHandler {
         println!();
         println!("{}", "  Spaces:".bright_yellow());
         println!("    {} - List all spaces", "spaces".bright_green());
-        println!("    {} create <name> - Create a new space", "space".bright_green());
+        println!("    {} create <name> [--mode lightweight|mls] - Create a new space", "space".bright_green());
         println!("    {} list - List all spaces (same as 'spaces')", "space".bright_green());
         println!("    {} <id> - Switch to a space by ID", "space".bright_green());
         println!("    {} <space_id> <code> - Join space with invite", "join".bright_green());
@@ -265,7 +265,7 @@ impl CommandHandler {
 
     async fn cmd_space(&mut self, args: &[&str]) -> Result<()> {
         if args.is_empty() {
-            ui::print_error("Usage: space create <name>  OR  space list  OR  space <id>");
+            ui::print_error("Usage: space create <name> [--mode lightweight|mls]  OR  space list  OR  space <id>");
             return Ok(());
         }
 
@@ -274,17 +274,63 @@ impl CommandHandler {
         }
 
         if args[0] == "create" {
-            let name = args[1..].join(" ");
+            // Parse arguments looking for --mode flag
+            let mut mode_str: Option<&str> = None;
+            let mut name_parts: Vec<&str> = Vec::new();
+            
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--mode" && i + 1 < args.len() {
+                    mode_str = Some(args[i + 1]);
+                    i += 2; // Skip both --mode and its value
+                } else {
+                    name_parts.push(args[i]);
+                    i += 1;
+                }
+            }
+            
+            let name = name_parts.join(" ");
             if name.is_empty() {
                 ui::print_error("Space name cannot be empty");
+                ui::print_info("Usage: space create <name> [--mode lightweight|mls]");
                 return Ok(());
             }
 
+            // Parse membership mode
+            let membership_mode = if let Some(mode) = mode_str {
+                match SpaceMembershipMode::from_str(mode) {
+                    Some(m) => m,
+                    None => {
+                        ui::print_error(&format!("Invalid mode: '{}'. Use 'lightweight' or 'mls'", mode));
+                        return Ok(());
+                    }
+                }
+            } else {
+                SpaceMembershipMode::default() // Default to MLS
+            };
+
+            // Show mode description before creating
+            println!();
+            if membership_mode.is_lightweight() {
+                ui::print_info("Creating LIGHTWEIGHT space:");
+                println!("  • No space-level encryption");
+                println!("  • Channels will provide E2EE");
+                println!("  • Suitable for large communities (100k+ users)");
+            } else {
+                ui::print_info("Creating MLS-ENCRYPTED space:");
+                println!("  • Space-level MLS encryption");
+                println!("  • All members share encryption keys");
+                println!("  • Best for small teams (<1000 users)");
+            }
+            println!();
+
             let (space, _op, _privacy_info) = {
                 let client = self.client.lock().await;
-                client.create_space(
+                client.create_space_with_mode(
                     name.clone(),
                     Some(format!("Created by {}", self.username)),
+                    SpaceVisibility::default(),
+                    membership_mode,
                 ).await?
             };
 
@@ -292,7 +338,11 @@ impl CommandHandler {
             self.current_channel = None;
             self.current_thread = None;
 
-            ui::print_success(&format!("Created space: {} ({})", name, hex::encode(&space.id.0[..8])));
+            ui::print_success(&format!("Created space: {} ({}) [{}]", 
+                name, 
+                hex::encode(&space.id.0[..8]),
+                membership_mode.short_name()
+            ));
         } else {
             // Switch to space by ID prefix
             let prefix = args[0];
@@ -628,9 +678,16 @@ impl CommandHandler {
     }
 
     async fn cmd_invite(&self, args: &[&str]) -> Result<()> {
+        println!("🎫 [CLI::INVITE] Command received with {} args", args.len());
+        if !args.is_empty() {
+            println!("   Args: {:?}", args);
+        }
+        
         let space_id = self.current_space.context("No space selected. Use: space <id>")?;
+        println!("✓ [CLI::INVITE] Current space: {}", hex::encode(&space_id.0[..8]));
 
         if args.is_empty() {
+            println!("   Action: List invites");
             // List invites
             let invites = {
                 let client = self.client.lock().await;
@@ -660,11 +717,15 @@ impl CommandHandler {
             }
             println!();
         } else if args[0] == "create" {
+            println!("   Action: Create invite");
             // Create invite
             let _op = {
                 let client = self.client.lock().await;
+                println!("   Calling client.create_invite...");
                 client.create_invite(space_id, None, None).await?
             };
+            
+            println!("✓  [CLI::INVITE] Invite created, fetching details...");
             
             // Fetch the latest invites to get the code
             let invites = {

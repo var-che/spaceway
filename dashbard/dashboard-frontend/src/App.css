@@ -1,0 +1,192 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #0d1117;
+  color: #c9d1d9;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Discord UI takes full screen, no padding */
+.app > * {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Dashboard view retains padding */
+.app.dashboard-view {
+  padding: 20px;
+}
+
+.app.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.app.loading h1 {
+  margin-bottom: 10px;
+}
+
+.app.loading p {
+  color: #8b949e;
+}
+
+.app.loading code {
+  background: #161b22;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #58a6ff;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 20px;
+  border-bottom: 1px solid #30363d;
+  background: #0d1117;
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 2rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab {
+  background: #21262d;
+  color: #8b949e;
+  border: 1px solid #30363d;
+  padding: 0.6rem 1.2rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.tab:hover {
+  background: #30363d;
+  color: #c9d1d9;
+}
+
+.tab.active {
+  background: #58a6ff;
+  color: #0d1117;
+  border-color: #58a6ff;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connected {
+  color: #3fb950;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  grid-template-areas:
+    "action action network"
+    "alice bob charlie"
+    "timeline timeline timeline";
+}
+
+.panel {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.panel h2 {
+  margin-bottom: 15px;
+  font-size: 1.2rem;
+  color: #58a6ff;
+}
+
+.action-panel {
+  grid-area: action;
+}
+
+.network-panel {
+  grid-area: network;
+  min-height: 400px;
+}
+
+.client-panel {
+  min-height: 500px;
+}
+
+.timeline-panel {
+  grid-area: timeline;
+  min-height: 300px;
+}
+
+.build-container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.build-panel-container {
+  min-height: 600px;
+}
+
+.tutorial-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.tutorial-panel-container {
+  min-height: 600px;
+  padding: 0;
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-areas:
+      "action network"
+      "alice bob"
+      "charlie charlie"
+      "timeline timeline";
+  }
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "action"
+      "network"
+      "alice"
+      "bob"
+      "charlie"
+      "timeline";
+  }
+}

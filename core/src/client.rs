@@ -289,16 +289,18 @@ impl Client {
                                 Ok(mls_group) => {
                                     let epoch = mls_group.current_epoch().0;
                                     println!("  ✓ Successfully joined MLS group (epoch {})", epoch);
+                                    
+                                    // Wrap in Option so we can move it conditionally
+                                    let mut mls_group_opt = Some(mls_group);
                                         
-                                        // Find which space this Welcome is for by checking spaces without MLS groups
-                                        // We look for the most recently joined space that doesn't have an MLS group yet
-                                        let mut found_space = false;
+                                        // Find which space or channel this Welcome is for
+                                        let mut found = false;
+                                        
+                                        // First check spaces without MLS groups
                                         {
                                             let space_mgr = space_manager.read().await;
                                             let mut spaces = space_mgr.list_spaces();
                                             
-                                            // Look for ANY space that doesn't have an MLS group yet
-                                            // (Assumes Welcome messages arrive in order with space joins)
                                             for space in spaces.iter() {
                                                 if space_mgr.get_mls_group(&space.id).is_none() {
                                                     // This must be the space for this Welcome!
@@ -307,7 +309,7 @@ impl Client {
                                                     drop(space_mgr);
                                                     
                                                     let mut space_mgr_mut = space_manager.write().await;
-                                                    space_mgr_mut.store_mls_group(space_id, mls_group);
+                                                    space_mgr_mut.store_mls_group(space_id, mls_group_opt.take().unwrap());
                                                     drop(space_mgr_mut);
                                                     
                                                     println!("  ✓ MLS group stored for space {} ({})", 
@@ -343,8 +345,6 @@ impl Client {
                                                                                     if let Err(e) = store.put_op(&op) {
                                                                                         eprintln!("      ⚠️ Failed to store queued operation: {}", e);
                                                                                     }
-                                                                                    // Process the operation...
-                                                                                    // (This would need the full operation processing logic)
                                                                                 }
                                                                             }
                                                                         }
@@ -369,14 +369,49 @@ impl Client {
                                                     }
                                                     drop(pending_queue);
                                                     
-                                                    found_space = true;
+                                                    found = true;
                                                     break;
                                                 }
                                             }
                                         }
                                         
-                                        if !found_space {
-                                            println!("  ⚠️ Couldn't find space for this MLS group (will sync via CRDT)");
+                                        // If not a space Welcome, check if it's a channel Welcome
+                                        if !found {
+                                            println!("  🔍 Not a space Welcome, checking channels...");
+                                            let mut target_channel_id: Option<(ChannelId, String)> = None;
+                                            
+                                            {
+                                                // Check all channels across all spaces
+                                                let space_mgr = space_manager.read().await;
+                                                let spaces = space_mgr.list_spaces();
+                                                let channel_mgr = channel_manager.read().await;
+                                                
+                                                'outer: for space in spaces.iter() {
+                                                    let channels = channel_mgr.list_channels(&space.id);
+                                                    
+                                                    // Look for any channel without an MLS group
+                                                    for channel in channels.iter() {
+                                                        if channel_mgr.get_mls_group(&channel.id).is_none() {
+                                                            // This must be the channel for this Welcome!
+                                                            target_channel_id = Some((channel.id, channel.name.clone()));
+                                                            found = true;
+                                                            break 'outer;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if let Some((channel_id, channel_name)) = target_channel_id {
+                                                let mut channel_mgr_mut = channel_manager.write().await;
+                                                channel_mgr_mut.store_mls_group(channel_id, mls_group_opt.take().unwrap());
+                                                drop(channel_mgr_mut);
+                                                
+                                                println!("  ✅ MLS group stored for channel {} ({})", 
+                                                    channel_name, hex::encode(&channel_id.0[..8]));
+                                                println!("  ✅ Can now participate in this channel!");
+                                            } else {
+                                                println!("  ⚠️ Couldn't find space or channel for this MLS group");
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -512,8 +547,8 @@ impl Client {
                             
                             // Check for MLS encryption marker and decode the operation
                             let op = if data.first() == Some(&0x01) {
-                                // MLS-encrypted - decrypt it
-                                println!("  🔒 MLS-encrypted message detected");
+                                // Space-level MLS encryption
+                                println!("  🔒 Space MLS-encrypted message detected");
                                 
                                 // Message format: [0x01][space_id (32 bytes)][encrypted_data]
                                 if data.len() < 33 {
@@ -543,7 +578,7 @@ impl Client {
                                         Some(mls_group) => {
                                             match mls_group.decrypt_application_message(encrypted_data, &provider) {
                                                 Ok(plaintext) => {
-                                                    println!("  ✓ Decrypted MLS message ({} bytes)", plaintext.len());
+                                                    println!("  ✓ Decrypted Space MLS message ({} bytes)", plaintext.len());
                                                     plaintext
                                                 }
                                                 Err(e) => {
@@ -572,6 +607,64 @@ impl Client {
                                         None => {
                                             eprintln!("  ⚠️ No MLS group found for space_id {}", hex::encode(&space_id.0[..8]));
                                             eprintln!("     (You may not be a member of this Space)");
+                                            continue;
+                                        }
+                                    }
+                                };
+                                
+                                // Decode the decrypted operation
+                                match minicbor::decode::<CrdtOp>(&decrypted_bytes) {
+                                    Ok(op) => op,
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to decode decrypted operation: {}", e);
+                                        continue;
+                                    }
+                                }
+                            } else if data.first() == Some(&0x02) {
+                                // Channel-level MLS encryption
+                                println!("  🔒 Channel MLS-encrypted message detected");
+                                
+                                // Message format: [0x02][channel_id (32 bytes)][encrypted_data]
+                                if data.len() < 33 {
+                                    eprintln!("  ⚠️ Channel MLS message too short (need at least 33 bytes)");
+                                    continue;
+                                }
+                                
+                                // Extract channel_id from message
+                                let channel_id_bytes: [u8; 32] = match data[1..33].try_into() {
+                                    Ok(bytes) => bytes,
+                                    Err(_) => {
+                                        eprintln!("  ⚠️ Invalid channel_id in MLS message");
+                                        continue;
+                                    }
+                                };
+                                let channel_id = ChannelId(channel_id_bytes);
+                                
+                                // Get the encrypted data (after marker + channel_id)
+                                let encrypted_data = &data[33..];
+                                
+                                // Decrypt using the channel's MLS group
+                                let decrypted_bytes = {
+                                    let mut channel_mgr = channel_manager.write().await;
+                                    let provider = mls_provider.read().await;
+                                    
+                                    match channel_mgr.get_mls_group_mut(&channel_id) {
+                                        Some(mls_group) => {
+                                            match mls_group.decrypt_application_message(encrypted_data, &provider) {
+                                                Ok(plaintext) => {
+                                                    println!("  ✓ Decrypted Channel MLS message ({} bytes)", plaintext.len());
+                                                    plaintext
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("  ⚠️ Failed to decrypt Channel MLS message: {}", e);
+                                                    eprintln!("     (You may have been removed from this Channel)");
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            eprintln!("  ⚠️ No MLS group found for channel_id {}", hex::encode(&channel_id.0[..8]));
+                                            eprintln!("     (You may not be a member of this Channel)");
                                             continue;
                                         }
                                     }
@@ -776,6 +869,25 @@ impl Client {
         description: Option<String>,
         visibility: SpaceVisibility,
     ) -> Result<(Space, CrdtOp, PrivacyInfo)> {
+        // Use default membership mode (MLS) for backwards compatibility
+        self.create_space_with_mode(name, description, visibility, SpaceMembershipMode::default()).await
+    }
+
+    /// Create a new Space with specific visibility and membership mode
+    /// 
+    /// This is the full-featured space creation API that allows specifying both:
+    /// - Visibility: Who can discover and join the space
+    /// - Membership Mode: Whether to use space-level MLS encryption or lightweight mode
+    /// 
+    /// Privacy Warning: This function returns privacy information that MUST be shown to the user
+    /// before the space is created.
+    pub async fn create_space_with_mode(
+        &self,
+        name: String,
+        description: Option<String>,
+        visibility: SpaceVisibility,
+        membership_mode: SpaceMembershipMode,
+    ) -> Result<(Space, CrdtOp, PrivacyInfo)> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -790,11 +902,12 @@ impl Client {
         
         let mut manager = self.space_manager.write().await;
         let provider = self.mls_provider.read().await;
-        let op = manager.create_space_with_visibility(
+        let op = manager.create_space_with_mode(
             space_id,
             name,
             description,
             visibility,
+            membership_mode,
             self.user_id,
             &self.keypair,
             &provider,
@@ -828,6 +941,14 @@ impl Client {
         if let Err(e) = self.dht_put_space(&space_id).await {
             eprintln!("⚠️  Failed to store Space in DHT: {}", e);
             // Non-fatal - space still created locally
+        }
+        
+        // Print mode information
+        if membership_mode.is_lightweight() {
+            println!("ℹ️  Created LIGHTWEIGHT space - no space-level MLS group");
+            println!("   Channels will provide E2EE when you create them.");
+        } else {
+            println!("ℹ️  Created MLS-encrypted space - space-level encryption enabled");
         }
         
         Ok((space, op, privacy_info))
@@ -870,6 +991,10 @@ impl Client {
         max_uses: Option<u32>,
         max_age_hours: Option<u32>,
     ) -> Result<CrdtOp> {
+        println!("🎫 [CLIENT::CREATE_INVITE] Called");
+        println!("   Space: {}", hex::encode(&space_id.0[..8]));
+        println!("   User: {}", hex::encode(&self.user_id.as_bytes()[..8]));
+        
         let op = {
             let mut manager = self.space_manager.write().await;
             manager.create_invite(
@@ -881,11 +1006,15 @@ impl Client {
             )?
         }; // Lock dropped here
         
+        println!("✓ [CLIENT::CREATE_INVITE] Operation created, broadcasting...");
+        
         // Store operation
         self.store.put_op(&op)?;
         
         // Broadcast operation
         self.broadcast_op(&op).await?;
+        
+        println!("✓ [CLIENT::CREATE_INVITE] Complete");
         
         Ok(op)
     }
@@ -1169,19 +1298,22 @@ impl Client {
             return Err(Error::InvalidOperation("Space ID mismatch".to_string()));
         }
         
-        // Convert metadata to Space
-        let space = crate::forum::Space {
-            id: metadata.id,
-            name: metadata.name.clone(),
-            description: metadata.description.clone(),
-            owner: metadata.owner,
-            members: metadata.initial_members.clone(),
-            visibility: metadata.visibility,
-            invites: std::collections::HashMap::new(), // Start with no invites
-            invite_permissions: metadata.invite_permissions.clone(),
-            epoch: metadata.epoch,
-            created_at: metadata.created_at,
-        };
+        // Convert metadata to Space - use Space::new_with_mode to properly initialize roles
+        let mut space = crate::forum::Space::new_with_mode(
+            metadata.id,
+            metadata.name.clone(),
+            metadata.description.clone(),
+            metadata.owner,
+            metadata.visibility,
+            SpaceMembershipMode::default(),
+            metadata.created_at,
+        );
+        
+        // Update fields that aren't set by constructor
+        space.members = metadata.initial_members.clone();
+        space.invites = std::collections::HashMap::new();
+        space.invite_permissions = metadata.invite_permissions.clone();
+        space.epoch = metadata.epoch;
         
         println!("✓ Retrieved Space from DHT: {}", space.name);
         
@@ -1798,6 +1930,23 @@ impl Client {
     ) -> Result<(Channel, CrdtOp)> {
         let channel_id = ChannelId::from_content(&space_id, &name, &self.user_id);
         
+        // Check permissions
+        {
+            let space_manager = self.space_manager.read().await;
+            let space = space_manager.get_space(&space_id)
+                .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+            
+            // Owner bypasses all permission checks
+            if space.owner != self.user_id {
+                // Check if user has CREATE_CHANNELS permission
+                if !space.can_create_channels(&self.user_id) {
+                    return Err(Error::Rejected(
+                        "Permission denied: You don't have CREATE_CHANNELS permission".to_string()
+                    ));
+                }
+            }
+        }
+        
         // Get current epoch from Space
         let epoch = {
             let space_manager = self.space_manager.read().await;
@@ -1807,7 +1956,10 @@ impl Client {
         };
         
         let mut manager = self.channel_manager.write().await;
-        let op = manager.create_channel(
+        let provider = self.mls_provider.read().await;
+        
+        // Create channel with MLS group
+        let op = manager.create_channel_with_mls(
             channel_id,
             space_id,
             name,
@@ -1815,7 +1967,11 @@ impl Client {
             self.user_id,
             &self.keypair,
             epoch,
+            true, // Always create channel-level MLS group
+            Some(&provider),
         )?;
+        
+        drop(provider); // Release MLS provider lock
         
         // Store operation
         self.store.put_op(&op)?;
@@ -1840,6 +1996,67 @@ impl Client {
     pub async fn list_channels(&self, space_id: &SpaceId) -> Vec<Channel> {
         let manager = self.channel_manager.read().await;
         manager.list_channels(space_id).into_iter().cloned().collect()
+    }
+    
+    /// Add a user to a Channel (with channel-level MLS encryption)
+    pub async fn add_to_channel(
+        &self,
+        channel_id: &ChannelId,
+        user_id: UserId,
+        role: Role,
+    ) -> Result<()> {
+        // Get the user's key package from DHT using existing method
+        let key_package_bundle = self.fetch_key_package_from_dht(&user_id).await?;
+        
+        // Serialize the key package bytes
+        let key_package_bytes = &key_package_bundle.key_package_bytes;
+        
+        let provider = self.mls_provider.read().await;
+        let mut manager = self.channel_manager.write().await;
+        
+        // Add to channel's MLS group (using self.user_id as the admin performing the action)
+        let welcome_bytes = manager.add_member_with_mls(
+            channel_id,
+            user_id,
+            role,
+            key_package_bytes,
+            &self.user_id,  // Pass the caller's user_id as admin
+            &provider,
+        ).map_err(|e| Error::Mls(format!("Failed to add member to channel: {}", e)))?;
+        drop(provider);
+        drop(manager);
+        
+        // Send Welcome message to the new member via their personal topic
+        let user_topic = format!("user/{}/welcome", hex::encode(&user_id.0));
+        {
+            let mut network = self.network.write().await;
+            network.publish(&user_topic, welcome_bytes).await?;
+        }
+        println!("  ✅ Sent channel Welcome message to {} on {}", hex::encode(&user_id.0[..8]), user_topic);
+        
+        Ok(())
+    }
+    
+    /// Remove a user from a Channel (kicks from channel's MLS group only, not from space)
+    pub async fn kick_from_channel(
+        &self,
+        channel_id: &ChannelId,
+        user_id: &UserId,
+    ) -> Result<()> {
+        let provider = self.mls_provider.read().await;
+        let mut manager = self.channel_manager.write().await;
+        
+        // Remove from channel's MLS group (using self.user_id as admin)
+        let _commit_bytes = manager.remove_member_with_mls(
+            channel_id,
+            user_id,
+            &self.user_id,
+            &provider,
+        ).map_err(|e| Error::Mls(format!("Failed to remove member from channel: {}", e)))?;
+        
+        // TODO: Broadcast Commit message to channel members via DHT
+        
+        Ok(())
     }
     
     /// Create a Thread in a Channel
@@ -1920,6 +2137,64 @@ impl Client {
         thread_id: ThreadId,
         content: String,
     ) -> Result<(Message, CrdtOp)> {
+        // Auto-join channel MLS group if needed (Phase 2: Per-channel encryption)
+        {
+            let thread_manager = self.thread_manager.read().await;
+            if let Some(thread) = thread_manager.get_thread(&thread_id) {
+                let channel_id = thread.channel_id;
+                drop(thread_manager);
+                
+                // Check if user is in this channel's MLS group
+                let channel_manager = self.channel_manager.read().await;
+                if let Some(channel) = channel_manager.get_channel(&channel_id) {
+                    let is_member = channel.is_member(&self.user_id);
+                    let has_mls_group = channel_manager.get_mls_group(&channel_id).is_some();
+                    
+                    println!("  🔍 Channel auto-join check: is_member={}, has_mls_group={}", is_member, has_mls_group);
+                    
+                    drop(channel_manager);
+                    
+                    // Auto-add to channel MLS group if:
+                    // 1. User is not yet a member of the channel
+                    // 2. Channel has an MLS group (it should, they're always created)
+                    if !is_member && has_mls_group {
+                        println!("  🔐 Auto-joining channel MLS group...");
+                        // Get user's key package from DHT
+                        match self.fetch_key_package_from_dht(&self.user_id).await {
+                            Ok(key_package_bundle) => {
+                                let key_package_bytes = &key_package_bundle.key_package_bytes;
+                                let provider = self.mls_provider.read().await;
+                                let mut channel_mgr = self.channel_manager.write().await;
+                                
+                                // Add user to channel's MLS group
+                                match channel_mgr.add_member_with_mls(
+                                    &channel_id,
+                                    self.user_id,
+                                    Role::Member,
+                                    key_package_bytes,
+                                    &self.user_id,  // User is adding themselves (self-join)
+                                    &provider,
+                                ) {
+                                    Ok(_welcome_bytes) => {
+                                        println!("  ✓ Auto-joined channel MLS group");
+                                        // TODO: Store Welcome message for offline sync
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  ⚠️ Failed to auto-join channel MLS: {}", e);
+                                        // Continue anyway - user can still post to channel
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  ⚠️ No key package found for auto-join: {}", e);
+                                // Continue anyway
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         // Hash the message content
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
@@ -2242,36 +2517,72 @@ impl Client {
         // Check if this Space has an MLS group - if so, encrypt the operation
         eprintln!("🔵 [GOSSIPSUB] Step B: Acquiring space_manager lock...");
         let data = {
-            let mut space_manager = self.space_manager.write().await;
-            eprintln!("🔵 [GOSSIPSUB] Step B: ✓ Lock acquired, checking for MLS group...");
+            // First check for channel-level MLS group (for operations in channels)
+            let mut channel_encrypted = false;
+            let mut data = Vec::new();
             
-            if let Some(mls_group) = space_manager.get_mls_group_mut(&op.space_id) {
-                eprintln!("🔵 [GOSSIPSUB] Step C: MLS group found, encrypting...");
-                // Encrypt the operation as MLS application data
-                let provider = self.mls_provider.read().await;
-                let encrypted_msg = mls_group.encrypt_application_message(&op_bytes, &provider)?;
-                drop(provider);
-                eprintln!("🔵 [GOSSIPSUB] Step C: ✓ Encrypted");
-                
-                // Serialize the encrypted MLS message
-                eprintln!("🔵 [GOSSIPSUB] Step D: Serializing encrypted message...");
-                let encrypted_bytes = encrypted_msg.to_bytes()
-                    .map_err(|e| Error::Serialization(format!("Failed to serialize MLS message: {}", e)))?;
-                eprintln!("🔵 [GOSSIPSUB] Step D: ✓ Serialized {} bytes", encrypted_bytes.len());
-                
-                // Format: [0x01][space_id (32 bytes)][encrypted_data]
-                // The space_id is needed for decryption on the receive side
-                let mut data = vec![0x01];
-                data.extend_from_slice(&op.space_id.0);
-                data.extend_from_slice(&encrypted_bytes);
-                data
-            } else {
-                eprintln!("🔵 [GOSSIPSUB] Step C: No MLS group, using plaintext");
-                // No MLS group - send plaintext with marker (0x00)
-                let mut data = vec![0x00];
-                data.extend_from_slice(&op_bytes);
-                data
+            // Check if this operation is for a specific channel
+            if let Some(channel_id) = &op.channel_id {
+                let mut channel_manager = self.channel_manager.write().await;
+                if let Some(mls_group) = channel_manager.get_mls_group_mut(channel_id) {
+                    eprintln!("🔵 [GOSSIPSUB] Step C: Channel MLS group found, encrypting...");
+                    // Encrypt the operation as MLS application data using channel's group
+                    let provider = self.mls_provider.read().await;
+                    let encrypted_msg = mls_group.encrypt_application_message(&op_bytes, &provider)?;
+                    drop(provider);
+                    drop(channel_manager);
+                    eprintln!("🔵 [GOSSIPSUB] Step C: ✓ Encrypted with channel MLS");
+                    
+                    // Serialize the encrypted MLS message
+                    eprintln!("🔵 [GOSSIPSUB] Step D: Serializing encrypted message...");
+                    let encrypted_bytes = encrypted_msg.to_bytes()
+                        .map_err(|e| Error::Serialization(format!("Failed to serialize MLS message: {}", e)))?;
+                    eprintln!("🔵 [GOSSIPSUB] Step D: ✓ Serialized {} bytes", encrypted_bytes.len());
+                    
+                    // Format: [0x02][channel_id (32 bytes)][encrypted_data]
+                    // 0x02 indicates channel-level encryption
+                    data = vec![0x02];
+                    data.extend_from_slice(&channel_id.0);
+                    data.extend_from_slice(&encrypted_bytes);
+                    channel_encrypted = true;
+                } else {
+                    drop(channel_manager);
+                }
             }
+            
+            // If not encrypted at channel level, check for space-level MLS
+            if !channel_encrypted {
+                let mut space_manager = self.space_manager.write().await;
+                eprintln!("🔵 [GOSSIPSUB] Step B: ✓ Lock acquired, checking for MLS group...");
+                
+                if let Some(mls_group) = space_manager.get_mls_group_mut(&op.space_id) {
+                    eprintln!("🔵 [GOSSIPSUB] Step C: Space MLS group found, encrypting...");
+                    // Encrypt the operation as MLS application data
+                    let provider = self.mls_provider.read().await;
+                    let encrypted_msg = mls_group.encrypt_application_message(&op_bytes, &provider)?;
+                    drop(provider);
+                    eprintln!("🔵 [GOSSIPSUB] Step C: ✓ Encrypted");
+                    
+                    // Serialize the encrypted MLS message
+                    eprintln!("🔵 [GOSSIPSUB] Step D: Serializing encrypted message...");
+                    let encrypted_bytes = encrypted_msg.to_bytes()
+                        .map_err(|e| Error::Serialization(format!("Failed to serialize MLS message: {}", e)))?;
+                    eprintln!("🔵 [GOSSIPSUB] Step D: ✓ Serialized {} bytes", encrypted_bytes.len());
+                    
+                    // Format: [0x01][space_id (32 bytes)][encrypted_data]
+                    // The space_id is needed for decryption on the receive side
+                    data = vec![0x01];
+                    data.extend_from_slice(&op.space_id.0);
+                    data.extend_from_slice(&encrypted_bytes);
+                } else {
+                    eprintln!("🔵 [GOSSIPSUB] Step C: No MLS group, using plaintext");
+                    // No MLS group - send plaintext with marker (0x00)
+                    data = vec![0x00];
+                    data.extend_from_slice(&op_bytes);
+                }
+            }
+            
+            data
         };
         eprintln!("🔵 [GOSSIPSUB] Step E: Data prepared ({} bytes), acquiring network lock...", data.len());
         
@@ -2745,6 +3056,126 @@ impl Client {
         
         println!("🌐 Connected to {}/{} peers in space", connected, peers.len());
         Ok(connected)
+    }
+    
+    // ===== DASHBOARD API =====
+    
+    /// Get a dashboard snapshot of this client's state
+    /// 
+    /// Returns a serializable snapshot containing:
+    /// - All spaces this client is a member of
+    /// - Channels within those spaces
+    /// - Connected peers
+    /// - DHT storage metadata
+    /// - MLS group information
+    /// 
+    /// This is safe to expose - it contains no private keys or sensitive crypto material.
+    pub async fn get_dashboard_snapshot(&self, client_name: &str) -> crate::dashboard::ClientSnapshot {
+        use crate::dashboard::{ClientSnapshot, SpaceSnapshot, ChannelSnapshot, ThreadSnapshot, MessageSnapshot};
+        
+        let user_id_hex = hex::encode(&self.user_id.0);
+        
+        // Build spaces list with channels and threads
+        let mut spaces: Vec<SpaceSnapshot> = Vec::new();
+        
+        {
+            let space_manager = self.space_manager.read().await;
+            let channel_manager = self.channel_manager.read().await;
+            let thread_manager = self.thread_manager.read().await;
+            
+            for space in space_manager.list_spaces() {
+                let mut snapshot = SpaceSnapshot::from_space(space);
+                
+                // Add channels for this space
+                snapshot.channels = channel_manager.list_channels(&space.id)
+                    .iter()
+                    .map(|chan| {
+                        let mut channel_snapshot = ChannelSnapshot::from_channel(chan);
+                        
+                        // Add threads for this channel
+                        channel_snapshot.threads = thread_manager.list_threads(&chan.id)
+                            .iter()
+                            .map(|thread| {
+                                ThreadSnapshot::from_thread(thread, Vec::new())
+                            })
+                            .collect();
+                        
+                        channel_snapshot
+                    })
+                    .collect();
+                
+                spaces.push(snapshot);
+            }
+        }
+        
+        // Now populate messages for each thread (need to release locks first)
+        for space in &mut spaces {
+            for channel in &mut space.channels {
+                for thread in &mut channel.threads {
+                    let thread_id_bytes = hex::decode(&thread.id).unwrap_or_default();
+                    if thread_id_bytes.len() == 32 {
+                        let mut id_arr = [0u8; 32];
+                        id_arr.copy_from_slice(&thread_id_bytes);
+                        let thread_id = crate::ThreadId(id_arr);
+                        
+                        let messages = self.list_messages(&thread_id).await;
+                        thread.messages = messages
+                            .iter()
+                            .map(|msg| MessageSnapshot::from_message(msg))
+                            .collect();
+                    }
+                }
+            }
+        }
+        
+        // Get connected peers
+        let connected_peers = self.get_connected_peers().await;
+        
+        // Mock DHT storage (TODO: implement real DHT query)
+        let dht_storage = vec![];
+        
+        // Mock MLS groups (TODO: query actual MLS group state)
+        let mls_groups = vec![];
+        
+        ClientSnapshot {
+            name: client_name.to_string(),
+            user_id: user_id_hex,
+            spaces,
+            dht_storage,
+            mls_groups,
+            connected_peers,
+        }
+    }
+    
+    /// Get list of spaces as snapshots
+    pub async fn list_spaces_snapshot(&self) -> Vec<crate::dashboard::SpaceSnapshot> {
+        let space_manager = self.space_manager.read().await;
+        space_manager.list_spaces()
+            .iter()
+            .map(|space| crate::dashboard::SpaceSnapshot::from_space(space))
+            .collect()
+    }
+    
+    /// Get a single space snapshot by ID
+    pub async fn get_space_snapshot(&self, space_id: SpaceId) -> Option<crate::dashboard::SpaceSnapshot> {
+        let space_manager = self.space_manager.read().await;
+        space_manager.get_space(&space_id)
+            .map(|space| {
+                let mut snapshot = crate::dashboard::SpaceSnapshot::from_space(space);
+                
+                // We can't add channels here because we hold space_manager lock
+                // Channels should be added separately by the caller
+                snapshot
+            })
+    }
+    
+    /// Get connected peer IDs
+    pub async fn get_connected_peers(&self) -> Vec<String> {
+        let network = self.network.read().await;
+        network.connected_peers().await
+            .into_iter()
+            .map(|peer_id| peer_id.to_string())
+            .collect()
     }
 }
 

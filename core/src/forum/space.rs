@@ -25,11 +25,25 @@ pub struct Space {
     /// Creator/owner
     pub owner: UserId,
     
-    /// Current members (user_id -> role)
+    /// Custom roles defined for this space
+    pub roles: HashMap<RoleId, SpaceRole>,
+    
+    /// Member role assignments (user_id -> role_id)
+    pub member_roles: HashMap<UserId, RoleId>,
+    
+    /// Default role for new members (like Discord's @everyone)
+    pub default_role: RoleId,
+    
+    /// DEPRECATED: Old members HashMap (kept for backward compatibility)
+    /// TODO: Remove after migration
+    #[deprecated(note = "Use member_roles instead")]
     pub members: HashMap<UserId, Role>,
     
     /// Visibility and discoverability settings
     pub visibility: SpaceVisibility,
+    
+    /// Membership mode (lightweight vs MLS encrypted)
+    pub membership_mode: SpaceMembershipMode,
     
     /// Active invites (invite_id -> invite)
     pub invites: HashMap<InviteId, Invite>,
@@ -37,7 +51,7 @@ pub struct Space {
     /// Invite permissions for this space
     pub invite_permissions: InvitePermissions,
     
-    /// Current MLS epoch
+    /// Current MLS epoch (only used if membership_mode is MLS)
     pub epoch: EpochId,
     
     /// Creation timestamp
@@ -45,6 +59,28 @@ pub struct Space {
 }
 
 impl Space {
+    /// Create default roles for a new space (Admin, Moderator, Member)
+    fn create_default_roles(owner: UserId) -> (HashMap<RoleId, SpaceRole>, HashMap<UserId, RoleId>, RoleId) {
+        let admin_role = SpaceRole::admin();
+        let mod_role = SpaceRole::moderator();
+        let member_role = SpaceRole::member();
+        
+        let admin_role_id = admin_role.id;
+        let mod_role_id = mod_role.id;
+        let member_role_id = member_role.id;
+        
+        let mut roles = HashMap::new();
+        roles.insert(admin_role_id, admin_role);
+        roles.insert(mod_role_id, mod_role);
+        roles.insert(member_role_id, member_role);
+        
+        // Owner gets Admin role
+        let mut member_roles = HashMap::new();
+        member_roles.insert(owner, admin_role_id);
+        
+        (roles, member_roles, member_role_id)
+    }
+    
     /// Create a new Space
     pub fn new(
         id: SpaceId,
@@ -53,6 +89,9 @@ impl Space {
         owner: UserId,
         created_at: u64,
     ) -> Self {
+        let (roles, member_roles, default_role) = Self::create_default_roles(owner);
+        
+        // Create deprecated members HashMap for backward compatibility
         let mut members = HashMap::new();
         members.insert(owner, Role::Admin);
         
@@ -61,8 +100,12 @@ impl Space {
             name,
             description,
             owner,
+            roles,
+            member_roles,
+            default_role,
             members,
             visibility: SpaceVisibility::default(),
+            membership_mode: SpaceMembershipMode::default(),
             invites: HashMap::new(),
             invite_permissions: InvitePermissions::default(),
             epoch: EpochId(0),
@@ -79,6 +122,8 @@ impl Space {
         visibility: SpaceVisibility,
         created_at: u64,
     ) -> Self {
+        let (roles, member_roles, default_role) = Self::create_default_roles(owner);
+        
         let mut members = HashMap::new();
         members.insert(owner, Role::Admin);
         
@@ -87,8 +132,45 @@ impl Space {
             name,
             description,
             owner,
+            roles,
+            member_roles,
+            default_role,
             members,
             visibility,
+            membership_mode: SpaceMembershipMode::default(),
+            invites: HashMap::new(),
+            invite_permissions: InvitePermissions::default(),
+            epoch: EpochId(0),
+            created_at,
+        }
+    }
+    
+    /// Create a new Space with specific visibility and membership mode
+    pub fn new_with_mode(
+        id: SpaceId,
+        name: String,
+        description: Option<String>,
+        owner: UserId,
+        visibility: SpaceVisibility,
+        membership_mode: SpaceMembershipMode,
+        created_at: u64,
+    ) -> Self {
+        let (roles, member_roles, default_role) = Self::create_default_roles(owner);
+        
+        let mut members = HashMap::new();
+        members.insert(owner, Role::Admin);
+        
+        Self {
+            id,
+            name,
+            description,
+            owner,
+            roles,
+            member_roles,
+            default_role,
+            members,
+            visibility,
+            membership_mode,
             invites: HashMap::new(),
             invite_permissions: InvitePermissions::default(),
             epoch: EpochId(0),
@@ -134,6 +216,127 @@ impl Space {
     /// Advance to next epoch
     pub fn advance_epoch(&mut self) {
         self.epoch.0 += 1;
+    }
+    
+    // ========================================================================
+    // Permission System Methods
+    // ========================================================================
+    
+    /// Check if user has a specific permission
+    pub fn has_permission(&self, user_id: &UserId, check: impl Fn(&SpacePermissions) -> bool) -> bool {
+        // Owner always has all permissions
+        if *user_id == self.owner {
+            return true;
+        }
+        
+        // Check user's role
+        if let Some(role_id) = self.member_roles.get(user_id) {
+            if let Some(role) = self.roles.get(role_id) {
+                return check(&role.permissions);
+            }
+        }
+        
+        // Fall back to default role
+        if let Some(role) = self.roles.get(&self.default_role) {
+            return check(&role.permissions);
+        }
+        
+        false
+    }
+    
+    /// Check if user can create channels
+    pub fn can_create_channels(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::CREATE_CHANNELS))
+    }
+    
+    /// Check if user can delete channels
+    pub fn can_delete_channels(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::DELETE_CHANNELS))
+    }
+    
+    /// Check if user can manage channels
+    pub fn can_manage_channels(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::MANAGE_CHANNELS))
+    }
+    
+    /// Check if user can kick members
+    pub fn can_kick_members(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::KICK_MEMBERS))
+    }
+    
+    /// Check if user can manage roles
+    pub fn can_manage_roles(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::MANAGE_ROLES))
+    }
+    
+    /// Check if user can delete messages
+    pub fn can_delete_messages(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::DELETE_MESSAGES))
+    }
+    
+    /// Check if user can invite members
+    pub fn can_invite_members(&self, user_id: &UserId) -> bool {
+        self.has_permission(user_id, |p| p.has(SpacePermissions::INVITE_MEMBERS))
+    }
+    
+    /// Check if user can assign a specific role (hierarchy check)
+    pub fn can_assign_role(&self, assigner: &UserId, target_role_id: &RoleId) -> bool {
+        // Owner can assign any role
+        if *assigner == self.owner {
+            return true;
+        }
+        
+        // Must have MANAGE_ROLES permission
+        if !self.can_manage_roles(assigner) {
+            return false;
+        }
+        
+        // Get assigner's role position
+        let assigner_position = self.member_roles.get(assigner)
+            .and_then(|rid| self.roles.get(rid))
+            .map(|r| r.position)
+            .unwrap_or(0);
+        
+        // Get target role position
+        let target_position = self.roles.get(target_role_id)
+            .map(|r| r.position)
+            .unwrap_or(0);
+        
+        // Can't assign role equal or higher than your own
+        assigner_position > target_position
+    }
+    
+    /// Assign a role to a user
+    pub fn assign_role(&mut self, user_id: UserId, role_id: RoleId) -> Result<()> {
+        // Check role exists
+        if !self.roles.contains_key(&role_id) {
+            return Err(Error::NotFound(format!("Role {:?} not found", role_id)));
+        }
+        
+        // Update role assignment
+        self.member_roles.insert(user_id, role_id);
+        
+        // Also update deprecated members HashMap for backward compatibility
+        let role = if let Some(r) = self.roles.get(&role_id) {
+            if r.permissions.is_admin() {
+                Role::Admin
+            } else if r.permissions.has(SpacePermissions::KICK_MEMBERS) {
+                Role::Moderator
+            } else {
+                Role::Member
+            }
+        } else {
+            Role::Member
+        };
+        self.members.insert(user_id, role);
+        
+        Ok(())
+    }
+    
+    /// Get user's role
+    pub fn get_user_role(&self, user_id: &UserId) -> Option<&SpaceRole> {
+        self.member_roles.get(user_id)
+            .and_then(|role_id| self.roles.get(role_id))
     }
 }
 
@@ -256,25 +459,54 @@ impl SpaceManager {
         creator_keypair: &crate::crypto::signing::Keypair,
         provider: &DescordProvider,
     ) -> Result<CrdtOp> {
+        // Use default membership mode (MLS) for backwards compatibility
+        self.create_space_with_mode(
+            space_id,
+            name,
+            description,
+            visibility,
+            SpaceMembershipMode::default(),
+            creator,
+            creator_keypair,
+            provider,
+        )
+    }
+
+    /// Create a new Space with specific visibility and membership mode
+    pub fn create_space_with_mode(
+        &mut self,
+        space_id: SpaceId,
+        name: String,
+        description: Option<String>,
+        visibility: SpaceVisibility,
+        membership_mode: SpaceMembershipMode,
+        creator: UserId,
+        creator_keypair: &crate::crypto::signing::Keypair,
+        provider: &DescordProvider,
+    ) -> Result<CrdtOp> {
         // Check if space already exists
         if self.spaces.contains_key(&space_id) {
             return Err(Error::AlreadyExists(format!("Space {:?} already exists", space_id)));
         }
         
-        // Create MLS group for this space
-        let mls_config = MlsGroupConfig::default();
-        let signer = openmls_basic_credential::SignatureKeyPair::new(
-            mls_config.ciphersuite.signature_algorithm()
-        ).map_err(|e| Error::Crypto(format!("Failed to create signer: {:?}", e)))?;
-        let signer = std::sync::Arc::new(signer); // Wrap in Arc
-        
-        let mls_group = MlsGroup::create(
-            space_id,
-            creator,
-            signer,
-            mls_config,
-            provider,
-        )?;
+        // Conditionally create MLS group based on membership mode
+        let mls_group = if membership_mode.uses_space_mls() {
+            let mls_config = MlsGroupConfig::default();
+            let signer = openmls_basic_credential::SignatureKeyPair::new(
+                mls_config.ciphersuite.signature_algorithm()
+            ).map_err(|e| Error::Crypto(format!("Failed to create signer: {:?}", e)))?;
+            let signer = std::sync::Arc::new(signer);
+            
+            Some(MlsGroup::create(
+                space_id,
+                creator,
+                signer,
+                mls_config,
+                provider,
+            )?)
+        } else {
+            None  // Lightweight mode: no space-level MLS group
+        };
         
         // Create Space
         let current_time = std::time::SystemTime::now()
@@ -282,12 +514,13 @@ impl SpaceManager {
             .unwrap()
             .as_secs();
         
-        let space = Space::new_with_visibility(
+        let space = Space::new_with_mode(
             space_id,
             name.clone(),
             description.clone(),
             creator,
             visibility,
+            membership_mode,
             current_time,
         );
         
@@ -315,7 +548,12 @@ impl SpaceManager {
         
         // Apply locally
         self.spaces.insert(space_id, space);
-        self.mls_groups.insert(space_id, mls_group);
+        
+        // Only insert MLS group if one was created
+        if let Some(group) = mls_group {
+            self.mls_groups.insert(space_id, group);
+        }
+        
         self.operations.insert(op.op_id, op.clone());
         self.validator.apply_op(&op);
         
@@ -693,18 +931,38 @@ impl SpaceManager {
         max_uses: Option<u32>,
         max_age_hours: Option<u32>,
     ) -> Result<CrdtOp> {
+        println!("🎫 [CREATE_INVITE] START");
+        println!("   Space: {}", hex::encode(&space_id.0[..8]));
+        println!("   Creator: {}", hex::encode(&creator.as_bytes()[..8]));
+        
         let space = self.spaces.get(&space_id)
-            .ok_or_else(|| Error::NotFound(format!("Space {:?} not found", space_id)))?;
+            .ok_or_else(|| {
+                println!("✗ [CREATE_INVITE] Space not found: {}", hex::encode(&space_id.0[..8]));
+                Error::NotFound(format!("Space {:?} not found", space_id))
+            })?;
+        
+        println!("✓ [CREATE_INVITE] Space found: {}", space.name);
         
         // Check permissions
         let creator_role = space.get_role(&creator)
-            .ok_or_else(|| Error::Rejected("Not a member of the space".to_string()))?;
+            .ok_or_else(|| {
+                println!("✗ [CREATE_INVITE] User not a member of space");
+                Error::Rejected("Not a member of the space".to_string())
+            })?;
         
-        if !Invite::can_create(*creator_role, &space.invite_permissions) {
+        println!("✓ [CREATE_INVITE] User role: {:?}", creator_role);
+        
+        let can_create = Invite::can_create(*creator_role, &space.invite_permissions);
+        println!("   Permission check: can_create={}", can_create);
+        
+        if !can_create {
+            println!("✗ [CREATE_INVITE] Permission denied");
             return Err(Error::Rejected(
                 "Insufficient permissions to create invites".to_string()
             ));
         }
+        
+        println!("✓ [CREATE_INVITE] Permission granted");
         
         // Create invite
         let current_time = std::time::SystemTime::now()
@@ -751,9 +1009,13 @@ impl SpaceManager {
         
         // Apply locally
         let space = self.spaces.get_mut(&space_id).unwrap();
-        space.invites.insert(invite.id, invite);
+        space.invites.insert(invite.id, invite.clone());
         self.operations.insert(op.op_id, op.clone());
         self.validator.apply_op(&op);
+        
+        println!("✓ [CREATE_INVITE] Invite created successfully");
+        println!("   Invite code: {}", invite.code);
+        println!("   Invite ID: {}", invite.id.0);
         
         Ok(op)
     }

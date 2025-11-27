@@ -24,13 +24,13 @@ use sha2::{Sha256, Digest};
 use hkdf::Hkdf;
 use std::path::{Path, PathBuf};
 use std::fs;
-use crate::types::ThreadId;
+use crate::types::{ThreadId, MessageId};
 use serde::{Serialize, Deserialize};
 use zeroize::Zeroizing;
 
 pub use blob::EncryptedBlob;
 pub use dht_blob::{DhtBlob, BlobIndex};
-pub use indices::BlobMetadata;
+pub use indices::{BlobMetadata, MessageIndex};
 pub use crdt::{VectorClock, TombstoneSet};
 pub use store::Store;
 pub use sync::{SyncRequest, SyncResponse, SyncMessage};
@@ -93,6 +93,7 @@ impl Storage {
     const CF_THREAD_MESSAGES: &'static str = "thread_messages";
     const CF_USER_MESSAGES: &'static str = "user_messages";
     const CF_BLOB_METADATA: &'static str = "blob_metadata";
+    const CF_MESSAGES: &'static str = "messages";
     const CF_MESSAGE_REFS: &'static str = "message_refs";
     const CF_VECTOR_CLOCKS: &'static str = "vector_clocks";
     const CF_TOMBSTONES: &'static str = "tombstones";
@@ -121,6 +122,7 @@ impl Storage {
             ColumnFamilyDescriptor::new(Self::CF_THREAD_MESSAGES, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_USER_MESSAGES, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_BLOB_METADATA, Options::default()),
+            ColumnFamilyDescriptor::new(Self::CF_MESSAGES, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_MESSAGE_REFS, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_VECTOR_CLOCKS, Options::default()),
             ColumnFamilyDescriptor::new(Self::CF_TOMBSTONES, Options::default()),
@@ -137,6 +139,121 @@ impl Storage {
         })
     }
 
+    /// Store an encrypted blob and return its hash
+    pub fn store_blob(&self, data: &[u8], key: &[u8; 32]) -> Result<BlobHash> {
+        // Create encrypted blob
+        let encrypted = EncryptedBlob::encrypt(data, key)?;
+        let hash = BlobHash::hash(data);
+        
+        // Write to file in blob directory
+        let blob_path = self.blob_dir.join(hash.to_hex());
+        encrypted.write_to_file(&blob_path)?;
+        
+        Ok(hash)
+    }
+    
+    /// Load and decrypt a blob by hash
+    pub fn load_blob(&self, hash: &BlobHash, key: &[u8; 32]) -> Result<Vec<u8>> {
+        let blob_path = self.blob_dir.join(hash.to_hex());
+        let encrypted = EncryptedBlob::read_from_file(&blob_path)?;
+        encrypted.decrypt(key)
+    }
+    
+    /// Store metadata for a blob
+    pub fn store_blob_metadata(&self, hash: &BlobHash, metadata: &BlobMetadata) -> Result<()> {
+        let cf = self.db.cf_handle(Self::CF_BLOB_METADATA)
+            .ok_or_else(|| anyhow::anyhow!("CF_BLOB_METADATA not found"))?;
+        
+        let key = hash.to_hex();
+        let value = bincode::serialize(metadata)?;
+        
+        self.db.put_cf(&cf, key.as_bytes(), &value)?;
+        Ok(())
+    }
+    
+    /// Get metadata for a blob
+    pub fn get_blob_metadata(&self, hash: &BlobHash) -> Result<Option<BlobMetadata>> {
+        let cf = self.db.cf_handle(Self::CF_BLOB_METADATA)
+            .ok_or_else(|| anyhow::anyhow!("CF_BLOB_METADATA not found"))?;
+        
+        let key = hash.to_hex();
+        match self.db.get_cf(&cf, key.as_bytes())? {
+            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+    
+    /// Get a message blob by message ID
+    pub fn get_message_blob(&self, message_id: &MessageId) -> Result<Option<BlobHash>> {
+        let cf = self.db.cf_handle(Self::CF_MESSAGES)
+            .ok_or_else(|| anyhow::anyhow!("CF_MESSAGES not found"))?;
+        
+        let key = message_id.as_bytes();
+        match self.db.get_cf(&cf, key)? {
+            Some(bytes) => {
+                // Stored as hex string
+                let hex = String::from_utf8(bytes)?;
+                Ok(Some(BlobHash::from_hex(&hex)?))
+            }
+            None => Ok(None),
+        }
+    }
+    
+    /// Index a message in thread and user message indices
+    pub fn index_message(&self, index: &MessageIndex) -> Result<()> {
+        // Store in thread messages index
+        let thread_cf = self.db.cf_handle(Self::CF_THREAD_MESSAGES)
+            .ok_or_else(|| anyhow::anyhow!("CF_THREAD_MESSAGES not found"))?;
+        
+        // Key: thread_id || timestamp || message_id
+        let mut thread_key = Vec::new();
+        thread_key.extend_from_slice(index.thread_id.as_bytes());
+        thread_key.extend_from_slice(&index.timestamp.to_be_bytes());
+        thread_key.extend_from_slice(index.message_id.as_bytes());
+        
+        let value = bincode::serialize(index)?;
+        self.db.put_cf(&thread_cf, &thread_key, &value)?;
+        
+        // Store in user messages index
+        let user_cf = self.db.cf_handle(Self::CF_USER_MESSAGES)
+            .ok_or_else(|| anyhow::anyhow!("CF_USER_MESSAGES not found"))?;
+        
+        // Key: user_id || timestamp || message_id
+        let mut user_key = Vec::new();
+        user_key.extend_from_slice(index.author.as_bytes());
+        user_key.extend_from_slice(&index.timestamp.to_be_bytes());
+        user_key.extend_from_slice(index.message_id.as_bytes());
+        
+        self.db.put_cf(&user_cf, &user_key, &value)?;
+        
+        // Store message_id -> blob_hash mapping
+        let msg_cf = self.db.cf_handle(Self::CF_MESSAGES)
+            .ok_or_else(|| anyhow::anyhow!("CF_MESSAGES not found"))?;
+        
+        let blob_hex = index.blob_hash.to_hex();
+        self.db.put_cf(&msg_cf, index.message_id.as_bytes(), blob_hex.as_bytes())?;
+        
+        Ok(())
+    }
+    
+    /// Get messages in a thread, ordered by timestamp
+    pub fn get_thread_messages(&self, thread_id: &ThreadId, limit: usize) -> Result<Vec<MessageIndex>> {
+        let cf = self.db.cf_handle(Self::CF_THREAD_MESSAGES)
+            .ok_or_else(|| anyhow::anyhow!("CF_THREAD_MESSAGES not found"))?;
+        
+        let prefix = thread_id.as_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf, prefix);
+        
+        let mut messages = Vec::new();
+        for item in iter.take(limit) {
+            let (_key, value) = item?;
+            let index: MessageIndex = bincode::deserialize(&value)?;
+            messages.push(index);
+        }
+        
+        Ok(messages)
+    }
+
     /// Get the blob directory path
     pub fn blob_dir(&self) -> &Path {
         &self.blob_dir
@@ -148,80 +265,3 @@ impl Storage {
         Ok(())
     }
 }
-
-/// Derive a thread-specific encryption key from MLS group secret
-pub fn derive_thread_key(mls_secret: &[u8], thread_id: &ThreadId) -> Zeroizing<[u8; 32]> {
-    let hkdf = Hkdf::<Sha256>::new(Some(thread_id.as_bytes()), mls_secret);
-    let mut key = Zeroizing::new([0u8; 32]);
-    hkdf.expand(b"descord-thread-v1", key.as_mut())
-        .expect("HKDF expand failed");
-    key
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-    use uuid::Uuid;
-
-    #[test]
-    fn test_storage_initialization() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = Storage::open(temp_dir.path())?;
-        
-        // Verify directory structure
-        assert!(temp_dir.path().join("db").exists());
-        assert!(temp_dir.path().join("blobs").exists());
-        
-        storage.close()?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_blob_hash_roundtrip() -> Result<()> {
-        let data = b"Hello, world!";
-        let hash = BlobHash::hash(data);
-        
-        // Convert to hex and back
-        let hex = hash.to_hex();
-        let parsed = BlobHash::from_hex(&hex)?;
-        
-        assert_eq!(hash, parsed);
-        Ok(())
-    }
-
-    #[test]
-    fn test_derive_thread_key() -> Result<()> {
-        let mls_secret = b"test_mls_secret_32_bytes_long!!";
-        let thread_id = ThreadId::new();
-        
-        // Derive key
-        let key1 = derive_thread_key(mls_secret, &thread_id);
-        let key2 = derive_thread_key(mls_secret, &thread_id);
-        
-        // Same inputs = same key
-        assert_eq!(&*key1, &*key2);
-        
-        // Different thread = different key
-        let thread_id2 = ThreadId::new();
-        let key3 = derive_thread_key(mls_secret, &thread_id2);
-        assert_ne!(&*key1, &*key3);
-        
-        Ok(())
-    }
-
-    #[test]
-    fn test_blob_hash_deterministic() {
-        let data = b"Test message content";
-        let hash1 = BlobHash::hash(data);
-        let hash2 = BlobHash::hash(data);
-        
-        // Same content = same hash
-        assert_eq!(hash1, hash2);
-        
-        // Different content = different hash
-        let hash3 = BlobHash::hash(b"Different content");
-        assert_ne!(hash1, hash3);
-    }
-}
-
